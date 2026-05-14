@@ -1,0 +1,19 @@
+{
+  "name": "hufs_seoul_static_map_planning_sample",
+  "bbox": {
+    "min_lat": 37.5940,
+    "min_lng": 127.0550,
+    "max_lat": 37.6000,
+    "max_lng": 127.0630
+  },
+  "default_static_map": {
+    "crs": "EPSG:4326",
+    "level": 16,
+    "w": 1024,
+    "h": 1024,
+    "maptype": "basic",
+    "format": "png",
+    "scale": 2,
+    "lang": "ko"
+  }
+}

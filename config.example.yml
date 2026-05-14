@@ -1,0 +1,42 @@
+source_mode: mock_raster
+naver_key_id_file: ./secrets/naver_key_id
+naver_key_file: ./secrets/naver_key
+license_gate:
+  naver_static_raster_analysis: false
+  naver_static_raster_storage: false
+  naver_dynamic_selector: true
+  official_api_only: true
+naver:
+  enabled: false
+  api_calls_allowed: false
+  static_raster_analysis_allowed: false
+  static_map:
+    endpoint: https://maps.apigw.ntruss.com/map-static/v2/raster
+    key_id_file: /etc/minseong/secrets/naver_maps_api_key_id
+    key_file: /etc/minseong/secrets/naver_maps_api_key
+    default_params:
+      crs: EPSG:4326
+      level: 16
+      w: 1024
+      h: 1024
+      maptype: basic
+      format: png
+      scale: 2
+      lang: ko
+  dynamic_map:
+    selector_file: web/dynamic_selector.html
+    public_deploy: false
+osm:
+  dry_run_only: true
+public_data:
+  enabled: false
+  sources:
+    building_register: candidate
+    dem: candidate
+output:
+  directory: outputs
+  style_profile: generic
+arnis:
+  upstream_dir: upstream/arnis
+  execute: false
+  isolated_world_output: outputs/world-test

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arnis Korea BBox Selector</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; color: #1f2937; }
+    header { padding: 12px 16px; border-bottom: 1px solid #d1d5db; }
+    main { display: grid; grid-template-columns: 1fr 360px; min-height: calc(100vh - 57px); }
+    #map { min-height: 560px; background: #eef2f7; }
+    aside { border-left: 1px solid #d1d5db; padding: 16px; }
+    label { display: block; font-size: 13px; margin: 10px 0 4px; }
+    input, textarea, button { box-sizing: border-box; width: 100%; font: inherit; }
+    input, textarea { border: 1px solid #9ca3af; padding: 8px; }
+    button { margin-top: 12px; padding: 9px 10px; border: 1px solid #374151; background: #fff; cursor: pointer; }
+    textarea { height: 220px; }
+    .hint { color: #6b7280; font-size: 13px; line-height: 1.4; }
+    @media (max-width: 800px) { main { grid-template-columns: 1fr; } aside { border-left: 0; border-top: 1px solid #d1d5db; } }
+  </style>
+  <!-- Replace YOUR_NAVER_MAPS_DYNAMIC_CLIENT_ID only for local operator testing. Do not publish this file publicly. -->
+  <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=YOUR_NAVER_MAPS_DYNAMIC_CLIENT_ID"></script>
+</head>
+<body>
+  <header>
+    <strong>Arnis Korea BBox Selector</strong>
+  </header>
+  <main>
+    <div id="map" aria-label="Naver Dynamic Map bbox selector"></div>
+    <aside>
+      <p class="hint">Local-only skeleton for selecting center, zoom level, and bbox. It does not call Static Map or export secrets.</p>
+      <label for="center">center lon,lat</label>
+      <input id="center" value="127.05900000,37.59700000">
+      <label for="level">level</label>
+      <input id="level" type="number" min="0" max="20" value="16">
+      <label for="bbox">bbox JSON</label>
+      <textarea id="bbox" spellcheck="false"></textarea>
+      <button id="copy" type="button">Copy JSON</button>
+    </aside>
+  </main>
+  <script>
+    const bboxEl = document.getElementById('bbox');
+    const centerEl = document.getElementById('center');
+    const levelEl = document.getElementById('level');
+    const initial = new naver.maps.LatLng(37.597, 127.059);
+    const map = new naver.maps.Map('map', { center: initial, zoom: Number(levelEl.value) });
+    let rectangle = null;
+    let firstCorner = null;
+
+    function updateOutput(bounds) {
+      const sw = bounds.getSW();
+      const ne = bounds.getNE();
+      const center = map.getCenter();
+      centerEl.value = `${center.lng().toFixed(8)},${center.lat().toFixed(8)}`;
+      levelEl.value = String(map.getZoom());
+      bboxEl.value = JSON.stringify({
+        center: { lon: Number(center.lng().toFixed(8)), lat: Number(center.lat().toFixed(8)) },
+        level: map.getZoom(),
+        bbox: {
+          min_lat: Number(sw.lat().toFixed(8)),
+          min_lng: Number(sw.lng().toFixed(8)),
+          max_lat: Number(ne.lat().toFixed(8)),
+          max_lng: Number(ne.lng().toFixed(8))
+        }
+      }, null, 2);
+    }
+
+    naver.maps.Event.addListener(map, 'click', function(event) {
+      if (!firstCorner) {
+        firstCorner = event.coord;
+        return;
+      }
+      const bounds = new naver.maps.LatLngBounds(firstCorner, event.coord);
+      if (rectangle) rectangle.setMap(null);
+      rectangle = new naver.maps.Rectangle({ map, bounds, strokeColor: '#2563eb', strokeWeight: 2, fillColor: '#3b82f6', fillOpacity: 0.12 });
+      updateOutput(bounds);
+      firstCorner = null;
+    });
+
+    naver.maps.Event.addListener(map, 'idle', function() {
+      if (rectangle) updateOutput(rectangle.getBounds());
+    });
+
+    document.getElementById('copy').addEventListener('click', async function() {
+      await navigator.clipboard.writeText(bboxEl.value);
+    });
+
+    updateOutput(map.getBounds());
+  </script>
+</body>
+</html>

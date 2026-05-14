@@ -1,0 +1,9 @@
+arnis-korea
+
+This distribution includes a wrapper and adapter pipeline for upstream Arnis.
+Upstream Arnis is developed by louis-e/arnis contributors and licensed under
+Apache License 2.0.
+
+Naver Cloud Maps API services, responses, raster images, and derived raster
+data are not included in this distribution and are not licensed under Apache
+License 2.0 by this project.

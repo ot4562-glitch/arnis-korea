@@ -1,0 +1,9 @@
+{
+  "name": "sample_hufs_seoul_dry_run",
+  "bbox": {
+    "min_lat": 37.5940,
+    "min_lng": 127.0550,
+    "max_lat": 37.6000,
+    "max_lng": 127.0630
+  }
+}
