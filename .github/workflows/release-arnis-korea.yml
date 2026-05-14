@@ -86,6 +86,7 @@ jobs:
           Copy-Item windows\run-help.bat package\run-help.bat
           Copy-Item windows\generate-hufs-osm.bat package\generate-hufs-osm.bat
           Copy-Item windows\plan-hufs-static.bat package\plan-hufs-static.bat
+          Get-ChildItem package -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
       - name: Windows smoke
         shell: pwsh
