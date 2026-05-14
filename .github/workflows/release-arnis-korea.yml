@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --no-default-features --manifest-path upstream/arnis/Cargo.toml
+          cargo build --release --no-default-features --manifest-path upstream/arnis/Cargo.toml --target-dir upstream/arnis/target
           echo "## upstream target release"
           find upstream/arnis/target/release -maxdepth 1 -type f -print
 
@@ -68,7 +68,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          New-Item -ItemType Directory -Force package\bin, package\web, package\examples | Out-Null
+          New-Item -ItemType Directory -Force package\bin, package\web, package\examples, package\src, package\scripts | Out-Null
 
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
 
@@ -86,11 +86,13 @@ jobs:
           Copy-Item THIRD_PARTY_LICENSES.md package\
           Copy-Item web\dynamic_selector.html package\web\
           Copy-Item examples\mock_raster.ppm package\examples\
+          Copy-Item -Recurse src\arnis_korea_detailed package\src\
+          Copy-Item scripts\arnis_korea_detailed.py package\scripts\
 
-          package\arnis-korea.exe help
-          package\arnis-korea.exe version
-          package\arnis-korea.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
-          package\arnis-korea.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir package\outputs
+          & .\package\arnis-korea.exe help
+          & .\package\arnis-korea.exe version
+          & .\package\arnis-korea.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
+          & .\package\arnis-korea.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir package\outputs
 
           Compress-Archive -Path package\* -DestinationPath arnis-korea-0.1.0-windows-x86_64.zip -Force
           Get-FileHash arnis-korea-0.1.0-windows-x86_64.zip -Algorithm SHA256 |
