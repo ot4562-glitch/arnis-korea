@@ -51,14 +51,14 @@ jobs:
           set -euo pipefail
           cargo build --release --no-default-features --manifest-path upstream/arnis/Cargo.toml --target-dir upstream/arnis/target
           echo "## upstream target release"
-          find upstream/arnis/target/release -maxdepth 1 -type f -print
+          find upstream/arnis/target -type f -print
 
       - name: Build arnis-korea launcher
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip pyinstaller
-          pyinstaller --clean --onefile --name arnis-korea --paths src scripts/arnis_korea_detailed.py
+          pyinstaller --clean --onefile --name arnis-korea --paths src --hidden-import urllib.request --hidden-import urllib.parse --hidden-import urllib.error --hidden-import urllib.response scripts/arnis_korea_detailed.py
           echo "## dist"
           find dist -maxdepth 1 -type f -print
 
@@ -72,9 +72,9 @@ jobs:
 
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
 
-          $arnisExe = Get-ChildItem upstream\arnis\target\release -Filter "*.exe" | Select-Object -First 1
+          $arnisExe = Get-ChildItem upstream\arnis\target -Recurse -Filter "arnis.exe" | Select-Object -First 1
           if (-not $arnisExe) {
-            Write-Error "Could not find upstream Arnis exe in upstream\arnis\target\release"
+            Write-Error "Could not find upstream Arnis exe under upstream\arnis\target"
           }
           Copy-Item $arnisExe.FullName package\bin\arnis-upstream.exe
 
@@ -108,10 +108,10 @@ jobs:
           mkdir -p package/bin package/web package/examples package/scripts package/src
 
           cp dist/arnis-korea package/arnis-korea
-          ARNIS_BIN="$(find upstream/arnis/target/release -maxdepth 1 -type f -perm -111 -name 'arnis*' | head -1)"
+          ARNIS_BIN="$(find upstream/arnis/target -type f -perm -111 \( -name 'arnis' -o -name 'arnis-*' \) | head -1)"
           if [ -z "$ARNIS_BIN" ]; then
             echo "Could not find upstream Arnis executable" >&2
-            find upstream/arnis/target/release -maxdepth 1 -type f -print >&2
+            find upstream/arnis/target -type f -print >&2
             exit 1
           fi
           cp "$ARNIS_BIN" package/bin/arnis-upstream
