@@ -34,7 +34,7 @@ from arnis_korea_detailed.segment_map_image import segment_pixels
 from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
 from arnis_korea_detailed.vectorize_features import vectorize_segments
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 STATIC_TERMS_FLAG = "--accept-naver-static-raster-terms"
 FORBIDDEN_OUTPUT_MARKERS = (
     "/mnt/minecraft-data/server/world",
@@ -233,7 +233,17 @@ def cmd_generate(args: argparse.Namespace) -> int:
     bbox = parse_bbox(args.bbox, args.bbox_file)
     static_result = {"executed": False, "reason": "source_not_naver_static"}
     features: list[Any] = []
-    metadata: dict[str, Any] = {"terrain": args.terrain}
+    metadata: dict[str, Any] = {
+        "terrain": args.terrain,
+        "spawn": {"lat": args.spawn_lat, "lng": args.spawn_lng},
+        "interior": args.interior,
+        "roof": args.roof,
+        "building_mode": {
+            "value": args.building_mode,
+            "status": "MVP mode",
+            "note": "현재 building-mode는 upstream Arnis 직접 옵션이 아니라 Arnis Korea metadata로 기록됩니다.",
+        },
+    }
 
     if args.source == "mock":
         features, raster = mock_features(args, bbox)
@@ -257,7 +267,18 @@ def cmd_generate(args: argparse.Namespace) -> int:
     feature_path = write_feature_document(args, args.source, features, bbox, metadata)
     arnis_result = {"executed": False, "reason": "source_not_osm"}
     if args.source == "osm":
-        arnis_result = run_arnis_if_explicit(bbox, args.output_dir, args.arnis_upstream, execute=True, terrain=args.terrain)
+        arnis_result = run_arnis_if_explicit(
+            bbox,
+            args.output_dir,
+            args.arnis_upstream,
+            execute=True,
+            terrain=args.terrain,
+            spawn_lat=args.spawn_lat,
+            spawn_lng=args.spawn_lng,
+            interior=args.interior,
+            roof=args.roof,
+            scale=args.arnis_scale,
+        )
     print(json.dumps({"output_dir": str(args.output_dir), "features": str(feature_path), "arnis": arnis_result, "static_map": static_result}, ensure_ascii=False, indent=2))
     return 0 if arnis_result.get("returncode", 0) == 0 else int(arnis_result.get("returncode", 1))
 
@@ -300,6 +321,15 @@ def add_output_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mock-height", type=int, default=96)
 
 
+def parse_optional_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="arnis-korea", description="Generate Korean Minecraft Java worlds with Arnis and gated Naver Static Map support.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -314,6 +344,14 @@ def parse_args() -> argparse.Namespace:
     add_secret_args(generate)
     generate.add_argument("--source", choices=["osm", "mock", "naver-static"], default="osm")
     generate.add_argument("--terrain", action="store_true")
+    generate.add_argument("--spawn-lat", type=float)
+    generate.add_argument("--spawn-lng", type=float)
+    generate.add_argument("--interior", type=parse_optional_bool, default=None, metavar="true|false")
+    generate.add_argument("--no-interior", dest="interior", action="store_false")
+    generate.add_argument("--roof", type=parse_optional_bool, default=None, metavar="true|false")
+    generate.add_argument("--no-roof", dest="roof", action="store_false")
+    generate.add_argument("--building-mode", choices=["full", "footprint-only", "roads-terrain", "campus-style"], default="full")
+    generate.add_argument("--arnis-scale", type=float)
     generate.add_argument("--arnis-upstream", type=Path, default=ROOT / "upstream" / "arnis")
     generate.add_argument("--allow-static-raster-storage", action="store_true")
     generate.add_argument("--allow-static-raster-analysis", action="store_true")

@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 ENDPOINT = "https://maps.apigw.ntruss.com/map-static/v2/raster"
-KEY_ID_FILE = Path("/etc/minseong/secrets/naver_maps_api_key_id")
-KEY_FILE = Path("/etc/minseong/secrets/naver_maps_api_key")
+KEY_ID_FILE = Path.home() / ".config" / "arnis-korea" / "naver_client_id"
+KEY_FILE = Path.home() / ".config" / "arnis-korea" / "naver_client_secret"
 
 
 @dataclass
@@ -62,8 +62,8 @@ def key_source_status(key_id_file: Path | None = None, key_file: Path | None = N
     key_path = key_file or KEY_FILE
     return {
         "env": {
-            "key_id": env_secret_status("NAVER_MAPS_API_KEY_ID"),
-            "key": env_secret_status("NAVER_MAPS_API_KEY"),
+            "key_id": env_secret_status("NAVER_MAPS_CLIENT_ID"),
+            "key": env_secret_status("NAVER_MAPS_CLIENT_SECRET"),
         },
         "file": {
             "key_id": secret_status(key_id_path).__dict__,
@@ -73,8 +73,8 @@ def key_source_status(key_id_file: Path | None = None, key_file: Path | None = N
 
 
 def load_headers(key_id_file: Path | None = None, key_file: Path | None = None) -> dict[str, str] | None:
-    key_id = os.environ.get("NAVER_MAPS_API_KEY_ID") or _read_secret(key_id_file or KEY_ID_FILE)
-    key = os.environ.get("NAVER_MAPS_API_KEY") or _read_secret(key_file or KEY_FILE)
+    key_id = os.environ.get("NAVER_MAPS_CLIENT_ID") or _read_secret(key_id_file or KEY_ID_FILE)
+    key = os.environ.get("NAVER_MAPS_CLIENT_SECRET") or _read_secret(key_file or KEY_FILE)
     if not key_id or not key:
         return None
     return {

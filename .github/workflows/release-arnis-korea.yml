@@ -1,4 +1,4 @@
-name: Release Arnis Korea
+name: Release Arnis Korea Windows
 
 on:
   workflow_dispatch:
@@ -8,24 +8,15 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ARTIFACT_NAME: arnis-korea-0.2.0-windows-x86_64
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: build-${{ matrix.artifact }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            artifact: windows-x86_64
-            archive: zip
-          - os: ubuntu-latest
-            artifact: linux-x86_64
-            archive: tar
+  build-windows:
+    name: build-windows-x86_64
+    runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -50,35 +41,36 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release --no-default-features --manifest-path upstream/arnis/Cargo.toml --target-dir upstream/arnis/target
-          echo "## upstream target release"
-          find upstream/arnis/target -type f -print
+          find upstream/arnis/target -type f -name 'arnis.exe' -print
 
-      - name: Build arnis-korea launcher
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip pyinstaller
-          pyinstaller --clean --onefile --name arnis-korea --paths src --hidden-import urllib.request --hidden-import urllib.parse --hidden-import urllib.error --hidden-import urllib.response scripts/arnis_korea_detailed.py
-          echo "## dist"
-          find dist -maxdepth 1 -type f -print
-
-      - name: Assemble Windows package
-        if: runner.os == 'Windows'
+      - name: Build GUI and CLI
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip pyinstaller
+          python -m compileall scripts src
+          python scripts\arnis_korea_gui.py --self-test-gui
+          pyinstaller --clean --onefile --windowed --name arnis-korea --paths src scripts\arnis_korea_gui.py
+          pyinstaller --clean --onefile --name arnis-korea-cli --paths src --hidden-import urllib --hidden-import urllib.request --hidden-import urllib.parse --hidden-import urllib.error --hidden-import urllib.response --collect-submodules urllib scripts\arnis_korea_detailed.py
+          if (-not (Test-Path dist\arnis-korea.exe)) { throw "missing GUI exe" }
+          if (-not (Test-Path dist\arnis-korea-cli.exe)) { throw "missing CLI exe" }
 
-          New-Item -ItemType Directory -Force package\bin, package\web, package\examples, package\src, package\scripts | Out-Null
+      - name: Assemble package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force package\bin, package\web, package\examples, package\docs, package\scripts, package\src | Out-Null
 
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
+          Copy-Item dist\arnis-korea-cli.exe package\arnis-korea-cli.exe
 
           $arnisExe = Get-ChildItem upstream\arnis\target -Recurse -Filter "arnis.exe" | Select-Object -First 1
-          if (-not $arnisExe) {
-            Write-Error "Could not find upstream Arnis exe under upstream\arnis\target"
-          }
+          if (-not $arnisExe) { throw "Could not find upstream Arnis exe under upstream\arnis\target" }
           Copy-Item $arnisExe.FullName package\bin\arnis-upstream.exe
 
           Copy-Item README.md package\
+          Copy-Item WINDOWS_QUICKSTART.md package\
+          Copy-Item NAVER_CLOUD_MAPS_KEY_GUIDE.md package\
           Copy-Item config.example.yml package\
           Copy-Item sample_bbox_hufs.json package\
           Copy-Item LICENSE package\
@@ -86,70 +78,66 @@ jobs:
           Copy-Item THIRD_PARTY_LICENSES.md package\
           Copy-Item web\dynamic_selector.html package\web\
           Copy-Item examples\mock_raster.ppm package\examples\
+          Copy-Item docs\*.md package\docs\
           Copy-Item -Recurse src\arnis_korea_detailed package\src\
           Copy-Item scripts\arnis_korea_detailed.py package\scripts\
+          Copy-Item scripts\arnis_korea_gui.py package\scripts\
+          Copy-Item windows\open-gui.bat package\open-gui.bat
+          Copy-Item windows\run-help.bat package\run-help.bat
+          Copy-Item windows\generate-hufs-osm.bat package\generate-hufs-osm.bat
+          Copy-Item windows\plan-hufs-static.bat package\plan-hufs-static.bat
 
-          & .\package\arnis-korea.exe help
-          & .\package\arnis-korea.exe version
-          & .\package\arnis-korea.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
-          & .\package\arnis-korea.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir package\outputs
-
-          Compress-Archive -Path package\* -DestinationPath arnis-korea-0.1.0-windows-x86_64.zip -Force
-          Get-FileHash arnis-korea-0.1.0-windows-x86_64.zip -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLower())  arnis-korea-0.1.0-windows-x86_64.zip" } |
-            Out-File SHA256SUMS.windows -Encoding ascii
-
-      - name: Assemble Linux package
-        if: runner.os == 'Linux'
-        shell: bash
+      - name: Windows smoke
+        shell: pwsh
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = "Stop"
+          & .\package\arnis-korea-cli.exe help
+          & .\package\arnis-korea-cli.exe version
+          & .\package\arnis-korea-cli.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          & .\package\arnis-korea-cli.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir smoke\outputs
+          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\world-hufs --source osm --terrain --interior=false --roof=true
 
-          mkdir -p package/bin package/web package/examples package/scripts package/src
-
-          cp dist/arnis-korea package/arnis-korea
-          ARNIS_BIN="$(find upstream/arnis/target -type f -perm -111 \( -name 'arnis' -o -name 'arnis-*' \) | head -1)"
-          if [ -z "$ARNIS_BIN" ]; then
-            echo "Could not find upstream Arnis executable" >&2
-            find upstream/arnis/target -type f -print >&2
-            exit 1
-          fi
-          cp "$ARNIS_BIN" package/bin/arnis-upstream
-
-          cp -R src/arnis_korea_detailed package/src/
-          cp scripts/arnis_korea_detailed.py package/scripts/
-          cp README.md config.example.yml sample_bbox_hufs.json LICENSE NOTICE THIRD_PARTY_LICENSES.md package/
-          cp web/dynamic_selector.html package/web/
-          cp examples/mock_raster.ppm package/examples/
-
-          chmod +x package/arnis-korea package/scripts/arnis_korea_detailed.py package/bin/arnis-upstream
-
-          package/arnis-korea help
-          package/arnis-korea version
-          package/arnis-korea plan-static --bbox-file package/sample_bbox_hufs.json > plan-static.json
-          package/arnis-korea mock-vectorize --bbox-file package/sample_bbox_hufs.json --output-dir package/outputs
-
-          tar -czf arnis-korea-0.1.0-linux-x86_64.tar.gz -C package .
-          sha256sum arnis-korea-0.1.0-linux-x86_64.tar.gz > SHA256SUMS.linux
+          $level = Get-ChildItem smoke\world-hufs -Recurse -Filter level.dat | Select-Object -First 1
+          if (-not $level) { throw "level.dat not found" }
+          $region = Get-ChildItem smoke\world-hufs -Recurse -Directory -Filter region | Select-Object -First 1
+          if (-not $region) { throw "region folder not found" }
+          $mca = Get-ChildItem smoke\world-hufs -Recurse -Filter *.mca | Select-Object -First 1
+          if (-not $mca) { throw ".mca file not found" }
+          if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found" }
+          $gui = Start-Process -FilePath ".\package\arnis-korea.exe" -ArgumentList "--self-test-gui" -Wait -PassThru
+          if ($gui.ExitCode -ne 0) { throw "GUI self-test failed with $($gui.ExitCode)" }
 
       - name: Secret and policy scan
         shell: bash
         run: |
           set -euo pipefail
+          python scripts/release_scan.py .
           python scripts/release_scan.py package
+          p1='g''hp_'
+          p2='github''_pat_'
+          p3='/etc/minseong/''secrets'
+          p4='naver_maps_api''_key'
+          if grep -RInE "$p1|$p2|$p3|$p4" --exclude-dir=.git --exclude='release_scan.py' . package; then
+            echo "secret or policy scan failed" >&2
+            exit 1
+          fi
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Compress-Archive -Path package\* -DestinationPath "$env:ARTIFACT_NAME.zip" -Force
+          Get-FileHash "$env:ARTIFACT_NAME.zip" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $env:ARTIFACT_NAME.zip" } |
+            Out-File SHA256SUMS.windows -Encoding ascii
+          Get-ChildItem package -Recurse | ForEach-Object { $_.FullName.Replace((Resolve-Path package).Path + "\", "") } |
+            Out-File MANIFEST.windows.txt -Encoding utf8
 
       - uses: actions/upload-artifact@v4
-        if: runner.os == 'Windows'
         with:
-          name: arnis-korea-0.1.0-windows-x86_64
+          name: arnis-korea-0.2.0-windows-x86_64
           path: |
-            arnis-korea-0.1.0-windows-x86_64.zip
+            arnis-korea-0.2.0-windows-x86_64.zip
             SHA256SUMS.windows
-
-      - uses: actions/upload-artifact@v4
-        if: runner.os == 'Linux'
-        with:
-          name: arnis-korea-0.1.0-linux-x86_64
-          path: |
-            arnis-korea-0.1.0-linux-x86_64.tar.gz
-            SHA256SUMS.linux
+            MANIFEST.windows.txt

@@ -12,8 +12,8 @@ naver:
   static_raster_analysis_allowed: false
   static_map:
     endpoint: https://maps.apigw.ntruss.com/map-static/v2/raster
-    key_id_file: /etc/minseong/secrets/naver_maps_api_key_id
-    key_file: /etc/minseong/secrets/naver_maps_api_key
+    key_id_file: ./secrets/naver_client_id
+    key_file: ./secrets/naver_client_secret
     default_params:
       crs: EPSG:4326
       level: 16
