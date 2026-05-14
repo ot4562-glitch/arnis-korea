@@ -13,6 +13,10 @@ from typing import Any
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from arnis_korea_detailed.arnis_wrapper import run_arnis_if_explicit
 from arnis_korea_detailed.export_arnis_features import arnis_compatible_export_plan, write_normalized_features
