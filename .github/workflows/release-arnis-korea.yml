@@ -74,7 +74,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p package/bin package/web package/examples package/scripts package/src
-          cp arnis-korea package/arnis-korea
+          cp dist/arnis-korea package/arnis-korea
           cp -R src/arnis_korea_detailed package/src/
           cp scripts/arnis_korea_detailed.py package/scripts/
           cp upstream/arnis/target/release/arnis package/bin/arnis-upstream
