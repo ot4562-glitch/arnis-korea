@@ -41,11 +41,21 @@ def run_arnis_if_explicit(
         return {"executed": False, "command": command}
     if packaged_command is None and not upstream_dir.exists():
         return {"executed": False, "reason": "missing_upstream_arnis", "command": command}
-    result = subprocess.run(command, cwd=upstream_dir if packaged_command is None else ROOT, check=False, text=True, capture_output=True)
+    result = subprocess.run(
+        command,
+        cwd=upstream_dir if packaged_command is None else ROOT,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
     return {
         "executed": True,
         "command": command,
         "returncode": result.returncode,
-        "stdout_tail": result.stdout[-2000:],
-        "stderr_tail": result.stderr[-2000:],
+        "stdout_tail": stdout[-2000:],
+        "stderr_tail": stderr[-2000:],
     }
