@@ -6,6 +6,9 @@ on:
     tags:
       - "arnis-korea-v*"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: read
 
@@ -36,6 +39,7 @@ jobs:
       - name: Ensure upstream Arnis source
         shell: bash
         run: |
+          set -euo pipefail
           if [ ! -f upstream/arnis/Cargo.toml ]; then
             mkdir -p upstream
             git clone --depth 1 https://github.com/louis-e/arnis upstream/arnis
@@ -44,54 +48,92 @@ jobs:
       - name: Build upstream Arnis
         shell: bash
         run: |
+          set -euo pipefail
           cargo build --release --no-default-features --manifest-path upstream/arnis/Cargo.toml
+          echo "## upstream target release"
+          find upstream/arnis/target/release -maxdepth 1 -type f -print
 
       - name: Build arnis-korea launcher
         shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip pyinstaller
           pyinstaller --clean --onefile --name arnis-korea --paths src scripts/arnis_korea_detailed.py
+          echo "## dist"
+          find dist -maxdepth 1 -type f -print
 
       - name: Assemble Windows package
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           New-Item -ItemType Directory -Force package\bin, package\web, package\examples | Out-Null
+
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
-          Copy-Item upstream\arnis\target\release\arnis.exe package\bin\arnis-upstream.exe
-          Copy-Item README.md, config.example.yml, sample_bbox_hufs.json, LICENSE, NOTICE, THIRD_PARTY_LICENSES.md package\
+
+          $arnisExe = Get-ChildItem upstream\arnis\target\release -Filter "*.exe" | Select-Object -First 1
+          if (-not $arnisExe) {
+            Write-Error "Could not find upstream Arnis exe in upstream\arnis\target\release"
+          }
+          Copy-Item $arnisExe.FullName package\bin\arnis-upstream.exe
+
+          Copy-Item README.md package\
+          Copy-Item config.example.yml package\
+          Copy-Item sample_bbox_hufs.json package\
+          Copy-Item LICENSE package\
+          Copy-Item NOTICE package\
+          Copy-Item THIRD_PARTY_LICENSES.md package\
           Copy-Item web\dynamic_selector.html package\web\
           Copy-Item examples\mock_raster.ppm package\examples\
+
           package\arnis-korea.exe help
           package\arnis-korea.exe version
           package\arnis-korea.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
           package\arnis-korea.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir package\outputs
-          Compress-Archive -Path package\* -DestinationPath arnis-korea-0.1.0-windows-x86_64.zip
-          Get-FileHash arnis-korea-0.1.0-windows-x86_64.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  arnis-korea-0.1.0-windows-x86_64.zip" } | Out-File SHA256SUMS.windows -Encoding ascii
+
+          Compress-Archive -Path package\* -DestinationPath arnis-korea-0.1.0-windows-x86_64.zip -Force
+          Get-FileHash arnis-korea-0.1.0-windows-x86_64.zip -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  arnis-korea-0.1.0-windows-x86_64.zip" } |
+            Out-File SHA256SUMS.windows -Encoding ascii
 
       - name: Assemble Linux package
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          set -euo pipefail
+
           mkdir -p package/bin package/web package/examples package/scripts package/src
+
           cp dist/arnis-korea package/arnis-korea
+          ARNIS_BIN="$(find upstream/arnis/target/release -maxdepth 1 -type f -perm -111 -name 'arnis*' | head -1)"
+          if [ -z "$ARNIS_BIN" ]; then
+            echo "Could not find upstream Arnis executable" >&2
+            find upstream/arnis/target/release -maxdepth 1 -type f -print >&2
+            exit 1
+          fi
+          cp "$ARNIS_BIN" package/bin/arnis-upstream
+
           cp -R src/arnis_korea_detailed package/src/
           cp scripts/arnis_korea_detailed.py package/scripts/
-          cp upstream/arnis/target/release/arnis package/bin/arnis-upstream
           cp README.md config.example.yml sample_bbox_hufs.json LICENSE NOTICE THIRD_PARTY_LICENSES.md package/
           cp web/dynamic_selector.html package/web/
           cp examples/mock_raster.ppm package/examples/
+
           chmod +x package/arnis-korea package/scripts/arnis_korea_detailed.py package/bin/arnis-upstream
+
           package/arnis-korea help
           package/arnis-korea version
           package/arnis-korea plan-static --bbox-file package/sample_bbox_hufs.json > plan-static.json
           package/arnis-korea mock-vectorize --bbox-file package/sample_bbox_hufs.json --output-dir package/outputs
+
           tar -czf arnis-korea-0.1.0-linux-x86_64.tar.gz -C package .
           sha256sum arnis-korea-0.1.0-linux-x86_64.tar.gz > SHA256SUMS.linux
 
       - name: Secret and policy scan
         shell: bash
         run: |
+          set -euo pipefail
           python scripts/release_scan.py package
 
       - uses: actions/upload-artifact@v4
