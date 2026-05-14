@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -59,7 +60,8 @@ class ArnisKoreaApp:
         self.root.minsize(920, 640)
         self.running = False
 
-        self.output_dir = StringVar(value=str(ROOT / "world-hufs-naver"))
+        self.output_dir = StringVar(value=str(ROOT / "output-hufs-naver"))
+        self.world_name = StringVar(value="world-hufs-naver")
         self.bbox = StringVar(value=DEFAULT_BBOX)
         self.spawn_mode = StringVar(value="auto")
         self.spawn_lat = StringVar(value="")
@@ -75,6 +77,8 @@ class ArnisKoreaApp:
         self.client_id = StringVar(value="")
         self.client_secret = StringVar(value="")
         self.cli_preview = StringVar(value="")
+        self.last_playable_world_dir: Path | None = None
+        self.last_project_dir: Path | None = None
 
         self._style()
         self._load_saved_keys()
@@ -127,39 +131,42 @@ class ArnisKoreaApp:
         form = ttk.Frame(self.world_tab)
         form.pack(fill="x")
         self._row(form, "출력 폴더", ttk.Entry(form, textvariable=self.output_dir), 0, ttk.Button(form, text="선택", command=self.choose_output))
-        self._row(form, "bbox", ttk.Entry(form, textvariable=self.bbox), 1)
+        self._row(form, "월드 이름", ttk.Entry(form, textvariable=self.world_name), 1)
+        self._row(form, "bbox", ttk.Entry(form, textvariable=self.bbox), 2)
         spawn = ttk.Frame(form)
         for text, value in [("자동", "auto"), ("수동", "manual"), ("Arnis 기본값", "default")]:
             ttk.Radiobutton(spawn, text=text, variable=self.spawn_mode, value=value, command=self.update_preview).pack(side="left", padx=(0, 14))
-        self._row(form, "스폰포인트", spawn, 2)
+        self._row(form, "스폰포인트", spawn, 3)
         spawn_values = ttk.Frame(form)
         ttk.Label(spawn_values, text="lat").pack(side="left")
         ttk.Entry(spawn_values, textvariable=self.spawn_lat, width=16).pack(side="left", padx=(6, 16))
         ttk.Label(spawn_values, text="lng").pack(side="left")
         ttk.Entry(spawn_values, textvariable=self.spawn_lng, width=16).pack(side="left", padx=(6, 0))
-        self._row(form, "수동 좌표", spawn_values, 3)
+        self._row(form, "수동 좌표", spawn_values, 4)
         source = ttk.Combobox(form, textvariable=self.source, values=["naver-only", "mock-naver", "naver-assisted", "osm"], state="readonly")
-        self._row(form, "소스", source, 4)
+        self._row(form, "소스", source, 5)
         mode = ttk.Combobox(form, textvariable=self.building_mode, values=["full", "footprint-only", "roads-terrain", "campus-style"], state="readonly")
-        self._row(form, "건물 생성 모드", mode, 5)
+        self._row(form, "건물 생성 모드", mode, 6)
         checks = ttk.Frame(form)
         ttk.Checkbutton(checks, text="Naver terrain estimate experimental", variable=self.terrain, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(checks, text="내부 생성", variable=self.interior, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(checks, text="지붕 생성", variable=self.roof, command=self.update_preview).pack(side="left")
-        self._row(form, "옵션", checks, 6)
+        self._row(form, "옵션", checks, 7)
         consent = ttk.Frame(form)
         ttk.Checkbutton(consent, text="Static Map 저장 동의", variable=self.allow_static_storage, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(consent, text="Static Map 분석 동의", variable=self.allow_static_analysis, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(consent, text="공식 Static Map 조건 확인", variable=self.accept_static_terms, command=self.update_preview).pack(side="left")
-        self._row(form, "Naver raster", consent, 7)
-        for var in [self.output_dir, self.bbox, self.spawn_lat, self.spawn_lng, self.source, self.building_mode]:
+        self._row(form, "Naver raster", consent, 8)
+        for var in [self.output_dir, self.world_name, self.bbox, self.spawn_lat, self.spawn_lng, self.source, self.building_mode]:
             var.trace_add("write", lambda *_: self.update_preview())
 
         actions = ttk.Frame(self.world_tab)
         actions.pack(fill="x", pady=(12, 8))
-        self.generate_button = ttk.Button(actions, text="Generate Naver-only World", style="Primary.TButton", command=self.generate_world)
+        self.generate_button = ttk.Button(actions, text="월드 생성", style="Primary.TButton", command=self.generate_world)
         self.generate_button.pack(side="left")
-        ttk.Button(actions, text="월드 폴더 열기", command=lambda: open_path(Path(self.output_dir.get()))).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Minecraft saves로 복사", command=self.export_to_minecraft_saves).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="프로젝트 폴더 열기", command=self.open_project_dir).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="월드 폴더 열기", command=self.open_world_dir).pack(side="left", padx=(8, 0))
 
         self.log = ScrolledText(self.world_tab, height=18, font=("Consolas", 10), wrap="word")
         self.log.pack(fill="both", expand=True)
@@ -213,10 +220,11 @@ class ArnisKoreaApp:
             "사용 순서\n"
             "1. 지도/범위 탭에서 bbox를 정합니다.\n"
             "2. 월드 생성 탭에서 출력 폴더와 스폰포인트, 건물 옵션을 선택합니다.\n"
-            "3. Generate Naver-only World를 누릅니다.\n\n"
+            "3. 월드 생성을 누릅니다.\n"
+            "4. Minecraft saves로 복사를 누르면 playable world 폴더만 복사됩니다.\n\n"
             "Minecraft Java saves 폴더\n"
             "%APPDATA%\\.minecraft\\saves\n\n"
-            "생성된 world 폴더를 위 saves 폴더로 복사한 뒤 Minecraft Java Edition에서 선택합니다.\n\n"
+            "수동 복사 시 output 안의 playable world 폴더만 saves에 복사합니다. arnis_korea_project 폴더는 개발/분석 자료입니다.\n\n"
             "네이버 API 키\n"
             "Naver Cloud Platform Console의 Maps Application에서 Static Map과 Dynamic Map을 켠 뒤 Client ID/Client Secret을 앱에 저장합니다.\n\n"
             "더블클릭 앱은 일반 사용자용 GUI이고, arnis-korea-cli.exe는 고급 사용자와 문제 진단용입니다."
@@ -303,7 +311,7 @@ class ArnisKoreaApp:
             self.map_result.insert("end", str(exc))
 
     def mock_vectorize(self) -> None:
-        self.run_cli(["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--source", "mock-naver", f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}"], verify_world=True)
+        self.run_cli(["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--source", "mock-naver", f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}"], verify_world=True)
 
     def save_log(self) -> None:
         path = filedialog.asksaveasfilename(defaultextension=".log", filetypes=[("Log", "*.log"), ("Text", "*.txt")])
@@ -317,7 +325,7 @@ class ArnisKoreaApp:
         return [sys.executable, str(ROOT / "scripts" / "arnis_korea_detailed.py")]
 
     def build_generate_args(self) -> list[str]:
-        args = ["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--source", self.source.get(), f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}"]
+        args = ["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--source", self.source.get(), f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}"]
         if self.terrain.get():
             args.append("--terrain")
         if self.source.get() == "naver-only":
@@ -372,6 +380,7 @@ class ArnisKoreaApp:
             result = subprocess.run(command, cwd=ROOT, check=False, text=True, encoding="utf-8", errors="replace", capture_output=True, env=env)
             stdout = result.stdout or ""
             stderr = result.stderr or ""
+            self._remember_output_paths(stdout)
             self.root.after(0, lambda: self.append_log(stdout + stderr + f"\nreturncode={result.returncode}\n"))
             if verify_world:
                 verification = self.verify_world(Path(self.output_dir.get()))
@@ -382,11 +391,50 @@ class ArnisKoreaApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def verify_world(self, path: Path) -> dict[str, object]:
+        world_dir = self.last_playable_world_dir or path / self.world_name.get()
         return {
-            "level_dat": any(path.rglob("level.dat")) if path.exists() else False,
-            "region_dir": any(candidate.is_dir() and candidate.name == "region" for candidate in path.rglob("*")) if path.exists() else False,
-            "mca_file": any(path.rglob("*.mca")) if path.exists() else False,
+            "world_dir": str(world_dir),
+            "level_dat": (world_dir / "level.dat").exists(),
+            "session_lock": (world_dir / "session.lock").exists(),
+            "region_dir": (world_dir / "region").is_dir(),
+            "mca_file": any((world_dir / "region").glob("*.mca")) if (world_dir / "region").exists() else False,
         }
+
+    def _remember_output_paths(self, stdout: str) -> None:
+        try:
+            data = json.loads(stdout)
+        except Exception:
+            return
+        if data.get("playable_world_dir"):
+            self.last_playable_world_dir = Path(data["playable_world_dir"])
+        if data.get("project_metadata_dir"):
+            self.last_project_dir = Path(data["project_metadata_dir"])
+
+    def open_world_dir(self) -> None:
+        open_path(self.last_playable_world_dir or Path(self.output_dir.get()) / self.world_name.get())
+
+    def open_project_dir(self) -> None:
+        open_path(self.last_project_dir or Path(self.output_dir.get()) / "arnis_korea_project")
+
+    def export_to_minecraft_saves(self) -> None:
+        world_dir = self.last_playable_world_dir or Path(self.output_dir.get()) / self.world_name.get()
+        if not (world_dir / "level.dat").exists():
+            messagebox.showerror("월드 없음", "먼저 월드를 생성하세요.")
+            return
+        saves = Path(os.environ.get("APPDATA", str(Path.home()))) / ".minecraft" / "saves"
+        saves.mkdir(parents=True, exist_ok=True)
+        destination = saves / world_dir.name
+        if destination.exists():
+            if not messagebox.askyesno("덮어쓰기 확인", f"{destination} 이 이미 있습니다. 덮어쓸까요?"):
+                index = 2
+                base = destination
+                while destination.exists():
+                    destination = base.with_name(f"{base.name}-{index}")
+                    index += 1
+            else:
+                shutil.rmtree(destination)
+        shutil.copytree(world_dir, destination)
+        self.append_log(json.dumps({"minecraft_saves_export": str(destination)}, ensure_ascii=False, indent=2) + "\n")
 
     def append_log(self, text: str) -> None:
         self.log.insert("end", text)

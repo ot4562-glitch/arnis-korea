@@ -15,6 +15,7 @@ Naver-only source policy는 외부 non-Naver 지도 데이터 사용 여부를 r
 - Overture
 - AWS Terrain Tiles
 - ESA WorldCover
+- Nominatim
 - public/government geodata
 - Naver internal map/tile endpoint
 - unofficial scraping, browser capture, canvas extraction, traffic tampering
@@ -28,6 +29,8 @@ Naver-only source policy는 외부 non-Naver 지도 데이터 사용 여부를 r
   "source_policy": "naver_only",
   "external_non_naver_sources_used": false,
   "official_naver_api_only": true,
-  "renderer_no_network": true
+  "renderer_no_network": true,
+  "renderer_network_disabled": true,
+  "synthetic_input_used": true
 }
 ```

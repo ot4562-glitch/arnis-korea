@@ -209,6 +209,7 @@ def _write_level_dat(output_dir: Path, world_name: str, spawn_x: int, spawn_z: i
             _tag(4, "LastPlayed", _long(now)),
             _tag(8, "LevelName", _string(world_name)),
             _tag(3, "GameType", _int(1)),
+            _tag(3, "SpawnAngle", _int(0)),
             _tag(1, "hardcore", _byte(0)),
             _tag(1, "allowCommands", _byte(1)),
             _tag(3, "SpawnX", _int(spawn_x)),
@@ -217,7 +218,34 @@ def _write_level_dat(output_dir: Path, world_name: str, spawn_x: int, spawn_z: i
             _tag(1, "initialized", _byte(1)),
             _tag(8, "Difficulty", _string("normal")),
             _tag(4, "RandomSeed", _long(0)),
+            _tag(4, "SizeOnDisk", _long(0)),
             _compound_tag("Version", [_tag(8, "Name", _string("1.21.1")), _tag(3, "Id", _int(DATA_VERSION)), _tag(1, "Snapshot", _byte(0))]),
+            _compound_tag(
+                "WorldGenSettings",
+                [
+                    _tag(1, "bonus_chest", _byte(0)),
+                    _tag(4, "seed", _long(0)),
+                    _tag(1, "generate_features", _byte(0)),
+                    _compound_tag(
+                        "dimensions",
+                        [
+                            _compound_tag(
+                                "minecraft:overworld",
+                                [
+                                    _tag(8, "type", _string("minecraft:overworld")),
+                                    _compound_tag(
+                                        "generator",
+                                        [
+                                            _tag(8, "type", _string("minecraft:flat")),
+                                            _tag(8, "settings", _string("minecraft:overworld")),
+                                        ],
+                                    ),
+                                ],
+                            )
+                        ],
+                    ),
+                ],
+            ),
             _compound_tag("DataPacks", [_tag(9, "Enabled", _list(8, [_string("vanilla")])), _tag(9, "Disabled", _list(8, []))]),
             _tag(9, "Player", _list(10, [])),
         ],
@@ -316,39 +344,49 @@ def _write_region(output_dir: Path, blocks: dict[tuple[int, int, int], str], siz
 
 def write_world(
     output_dir: Path,
+    metadata_dir: Path,
     world_features_path: Path,
     bbox: dict[str, float],
     source_mode: str,
     terrain_source: str,
     building_mode: str,
+    world_name: str = "Arnis Korea Naver World",
     size: int = 128,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    metadata_dir.mkdir(parents=True, exist_ok=True)
     world_doc = json.loads(world_features_path.read_text(encoding="utf-8"))
     blocks = _blocks_from_features(world_doc, bbox, size)
     region_path = _write_region(output_dir, blocks, size)
-    _write_level_dat(output_dir, "Arnis Korea Naver-only", size // 2, size // 2)
+    _write_level_dat(output_dir, world_name, size // 2, size // 2)
+    (output_dir / "session.lock").write_bytes(struct.pack(">q", int(time.time() * 1000)))
     report = {
         "world_generated": True,
         "writer": "arnis_korea_minimal_anvil_writer",
+        "target_minecraft_java_version": "1.21.x",
         "renderer_no_network": True,
         "source_mode": source_mode,
+        "world_name": world_name,
         "terrain_source": terrain_source,
         "external_dem_used": False,
         "height_source": "heuristic_from_naver_raster",
         "exact_height_available": False,
         "building_mode": building_mode,
+        "world_dir": str(output_dir),
         "level_dat": str(output_dir / "level.dat"),
+        "session_lock": str(output_dir / "session.lock"),
         "region_file": str(region_path),
         "mca_count": len(list((output_dir / "region").glob("*.mca"))),
         "feature_count": len(world_doc.get("features", [])),
     }
-    (output_dir / "arnis-korea-quality-report.md").write_text(
+    (metadata_dir / "arnis-korea-quality-report.md").write_text(
         "\n".join(
             [
-                "# Arnis Korea v0.5 Naver-only Quality Report",
+                "# Arnis Korea v0.5.1 Naver-only Quality Report",
                 "",
                 f"- source_mode: {source_mode}",
+                f"- world_name: {world_name}",
+                f"- target_minecraft_java_version: {report['target_minecraft_java_version']}",
                 f"- writer: {report['writer']}",
                 f"- renderer_no_network: {str(report['renderer_no_network']).lower()}",
                 f"- external_non_naver_sources_used: false",

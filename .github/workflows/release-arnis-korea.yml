@@ -8,7 +8,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ARTIFACT_NAME: arnis-korea-0.5.0-windows-x86_64
+  ARTIFACT_NAME: arnis-korea-0.5.2-windows-x86_64
 
 permissions:
   contents: read
@@ -24,6 +24,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure upstream Arnis source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f upstream/arnis/Cargo.toml ]; then
+            mkdir -p upstream
+            git clone --depth 1 https://github.com/louis-e/arnis upstream/arnis
+          fi
+
+      - name: Build patched Arnis no-network renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/patch_arnis_no_network.py
+          cargo build --release --no-default-features --manifest-path upstream/arnis/Cargo.toml --target-dir upstream/arnis/target
+          test -f upstream/arnis/target/release/arnis.exe
 
       - name: Build GUI and CLI
         shell: pwsh
@@ -46,8 +65,7 @@ jobs:
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
           Copy-Item dist\arnis-korea-cli.exe package\arnis-korea-cli.exe
 
-          "Arnis Korea v0.5 uses the packaged no-network Python world writer for Naver-only mode." |
-            Out-File package\bin\arnis-korea-renderer.txt -Encoding utf8
+          Copy-Item upstream\arnis\target\release\arnis.exe package\bin\arnis-korea-renderer.exe
 
           Copy-Item README.md package\
           Copy-Item WINDOWS_QUICKSTART.md package\
@@ -78,16 +96,26 @@ jobs:
           & .\package\arnis-korea-cli.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
           New-Item -ItemType Directory -Force smoke | Out-Null
           & .\package\arnis-korea-cli.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir smoke\outputs
-          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\world-hufs-naver --source mock-naver --terrain=false --interior=false --roof=true --building-mode full
+          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\smoke-output --world-name "world-hufs-naver-smoke" --source mock-naver --terrain=false --interior=false --roof=true --building-mode full
 
-          $level = Get-ChildItem smoke\world-hufs-naver -Recurse -Filter level.dat | Select-Object -First 1
-          if (-not $level) { throw "level.dat not found" }
-          $region = Get-ChildItem smoke\world-hufs-naver -Recurse -Directory -Filter region | Select-Object -First 1
-          if (-not $region) { throw "region folder not found" }
-          $mca = Get-ChildItem smoke\world-hufs-naver -Recurse -Filter *.mca | Select-Object -First 1
+          $world = "smoke\smoke-output\world-hufs-naver-smoke"
+          $project = "smoke\smoke-output\arnis_korea_project"
+          if (-not (Test-Path "$world\level.dat")) { throw "level.dat not found" }
+          if (-not (Test-Path "$world\session.lock")) { throw "session.lock not found" }
+          if (-not (Test-Path "$world\region")) { throw "region folder not found" }
+          $mca = Get-ChildItem "$world\region" -Filter *.mca | Select-Object -First 1
           if (-not $mca) { throw ".mca file not found" }
-          $policy = Get-Content smoke\world-hufs-naver\source-policy-report.json -Raw | ConvertFrom-Json
+          foreach ($bad in @("naver_raster", "features.normalized.json", "naver_synthetic_osm.json", "naver_world_features.json", "source-policy-report.json", "arnis-korea-quality-report.md")) {
+            if (Test-Path (Join-Path $world $bad)) { throw "forbidden file in world root: $bad" }
+          }
+          if (-not (Test-Path "$project\world_validation.json")) { throw "world_validation.json not found" }
+          if (-not (Test-Path "$project\arnis-korea-quality-report.md")) { throw "quality report not found" }
+          $validation = Get-Content "$project\world_validation.json" -Raw | ConvertFrom-Json
+          if ($validation.valid -ne $true) { throw "world validation failed" }
+          $policy = Get-Content "$project\source-policy-report.json" -Raw | ConvertFrom-Json
           if ($policy.external_non_naver_sources_used -ne $false) { throw "source policy failed" }
+          if ($policy.renderer_network_disabled -ne $true) { throw "renderer network policy failed" }
+          if ($policy.synthetic_input_used -ne $true) { throw "synthetic input policy failed" }
           if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found" }
           $gui = Start-Process -FilePath ".\package\arnis-korea.exe" -ArgumentList "--self-test-gui" -Wait -PassThru
           if ($gui.ExitCode -ne 0) { throw "GUI self-test failed with $($gui.ExitCode)" }
@@ -120,8 +148,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-0.5.0-windows-x86_64
+          name: arnis-korea-0.5.2-windows-x86_64
           path: |
-            arnis-korea-0.5.0-windows-x86_64.zip
+            arnis-korea-0.5.2-windows-x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt

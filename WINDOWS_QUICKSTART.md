@@ -2,42 +2,51 @@
 
 ## 1. Artifact 풀기
 
-GitHub Actions artifact `arnis-korea-0.5.0-windows-x86_64` 안의 zip을 원하는 폴더에 풉니다. 이 artifact는 개인 개발용입니다.
+GitHub Actions artifact `arnis-korea-0.5.2-windows-x86_64` 안의 zip을 원하는 폴더에 풉니다.
 
 ## 2. GUI 실행
 
-`arnis-korea.exe` 또는 `open-gui.bat`을 더블클릭합니다.
+`arnis-korea.exe` 또는 `open-gui.bat`을 실행합니다.
 
-## 3. 네이버 키 저장
+## 3. Naver-only 생성
 
-GUI의 `네이버 API` 탭에 Naver Cloud Maps Application의 Client ID/Client Secret을 붙여넣고 저장합니다. 키는 `%APPDATA%\ArnisKorea\secrets.json`에만 저장되며 artifact에 포함되지 않습니다.
+`네이버 API` 탭에 Maps Application Client ID/Client Secret을 저장합니다. `월드 생성` 탭에서 bbox, output folder, world name을 확인하고 Static Map 저장/분석 동의 후 `월드 생성`을 누릅니다.
 
-## 4. Naver-only world 생성
+## 4. Minecraft saves로 복사
 
-`월드 생성` 탭에서 기본값 `Naver-only`를 사용합니다. Static Map 저장/분석 동의와 공식 조건 확인을 체크한 뒤 `Generate Naver-only World`를 누릅니다.
+GUI의 `Minecraft saves로 복사`를 누릅니다. 이 버튼은 `output\<world_name>` 폴더만 복사합니다.
 
-기본 HUFS 테스트 bbox:
+수동 복사 시에도 아래 폴더만 복사하세요.
 
 ```text
-37.5955,127.0555,37.5985,127.0620
+output-hufs-naver\world-hufs-naver
 ```
 
-## 5. Mock smoke
+아래 폴더는 복사하지 않습니다.
 
-실제 Naver API 없이 writer만 확인하려면:
+```text
+output-hufs-naver\arnis_korea_project
+```
+
+## 5. CLI smoke
 
 ```powershell
-.\arnis-korea-cli.exe generate --source mock-naver --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir ".\world-hufs-naver-mock" --terrain=false --interior=false --roof=true --building-mode full
+.\arnis-korea-cli.exe generate --source mock-naver --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir ".\smoke-output" --world-name "world-hufs-naver-smoke" --terrain=false --interior=false --roof=true --building-mode full
 ```
 
-성공하면 `level.dat`, `region\r.0.0.mca`, `source-policy-report.json`, `arnis-korea-quality-report.md`가 생성됩니다.
-
-## 6. Minecraft에서 열기
-
-생성된 world 폴더를 아래 경로로 옮깁니다.
+성공 기준:
 
 ```text
-%APPDATA%\.minecraft\saves
+smoke-output\world-hufs-naver-smoke\level.dat
+smoke-output\world-hufs-naver-smoke\session.lock
+smoke-output\world-hufs-naver-smoke\region\*.mca
+smoke-output\arnis_korea_project\world_validation.json
 ```
 
-Minecraft Java Edition을 실행하고 싱글플레이 월드 목록에서 선택합니다.
+## 6. v0.5.0 dirty folder repair
+
+이 명령은 layout만 정리합니다. v0.5.0 minimal writer가 만든 invalid `level.dat`/`.mca`를 호환 world로 변환하지는 못합니다.
+
+```powershell
+.\arnis-korea-cli.exe repair-world-layout --input "%APPDATA%\.minecraft\saves\world-hufs-naver" --output "%APPDATA%\.minecraft\saves\world-hufs-naver-clean"
+```

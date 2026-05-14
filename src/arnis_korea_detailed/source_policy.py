@@ -18,6 +18,7 @@ BLOCKED_EXTERNAL_SOURCES = {
     "esa_worldcover": "ESA WorldCover",
     "public_geodata": "public/government geodata",
     "naver_internal_tiles": "unofficial Naver internal map/tile endpoints",
+    "nominatim": "Nominatim reverse geocoding",
 }
 
 
