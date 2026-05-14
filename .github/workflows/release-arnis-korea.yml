@@ -8,7 +8,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ARTIFACT_NAME: arnis-korea-0.2.0-windows-x86_64
+  ARTIFACT_NAME: arnis-korea-0.5.0-windows-x86_64
 
 permissions:
   contents: read
@@ -24,24 +24,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Ensure upstream Arnis source
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f upstream/arnis/Cargo.toml ]; then
-            mkdir -p upstream
-            git clone --depth 1 https://github.com/louis-e/arnis upstream/arnis
-          fi
-
-      - name: Build upstream Arnis
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --release --no-default-features --manifest-path upstream/arnis/Cargo.toml --target-dir upstream/arnis/target
-          find upstream/arnis/target -type f -name 'arnis.exe' -print
 
       - name: Build GUI and CLI
         shell: pwsh
@@ -64,9 +46,8 @@ jobs:
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
           Copy-Item dist\arnis-korea-cli.exe package\arnis-korea-cli.exe
 
-          $arnisExe = Get-ChildItem upstream\arnis\target -Recurse -Filter "arnis.exe" | Select-Object -First 1
-          if (-not $arnisExe) { throw "Could not find upstream Arnis exe under upstream\arnis\target" }
-          Copy-Item $arnisExe.FullName package\bin\arnis-upstream.exe
+          "Arnis Korea v0.5 uses the packaged no-network Python world writer for Naver-only mode." |
+            Out-File package\bin\arnis-korea-renderer.txt -Encoding utf8
 
           Copy-Item README.md package\
           Copy-Item WINDOWS_QUICKSTART.md package\
@@ -84,7 +65,7 @@ jobs:
           Copy-Item scripts\arnis_korea_gui.py package\scripts\
           Copy-Item windows\open-gui.bat package\open-gui.bat
           Copy-Item windows\run-help.bat package\run-help.bat
-          Copy-Item windows\generate-hufs-osm.bat package\generate-hufs-osm.bat
+          Copy-Item windows\generate-hufs-naver-mock.bat package\generate-hufs-naver-mock.bat
           Copy-Item windows\plan-hufs-static.bat package\plan-hufs-static.bat
           Get-ChildItem package -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
@@ -97,14 +78,16 @@ jobs:
           & .\package\arnis-korea-cli.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
           New-Item -ItemType Directory -Force smoke | Out-Null
           & .\package\arnis-korea-cli.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir smoke\outputs
-          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\world-hufs --source osm --terrain --interior=false --roof=true
+          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\world-hufs-naver --source mock-naver --terrain=false --interior=false --roof=true --building-mode full
 
-          $level = Get-ChildItem smoke\world-hufs -Recurse -Filter level.dat | Select-Object -First 1
+          $level = Get-ChildItem smoke\world-hufs-naver -Recurse -Filter level.dat | Select-Object -First 1
           if (-not $level) { throw "level.dat not found" }
-          $region = Get-ChildItem smoke\world-hufs -Recurse -Directory -Filter region | Select-Object -First 1
+          $region = Get-ChildItem smoke\world-hufs-naver -Recurse -Directory -Filter region | Select-Object -First 1
           if (-not $region) { throw "region folder not found" }
-          $mca = Get-ChildItem smoke\world-hufs -Recurse -Filter *.mca | Select-Object -First 1
+          $mca = Get-ChildItem smoke\world-hufs-naver -Recurse -Filter *.mca | Select-Object -First 1
           if (-not $mca) { throw ".mca file not found" }
+          $policy = Get-Content smoke\world-hufs-naver\source-policy-report.json -Raw | ConvertFrom-Json
+          if ($policy.external_non_naver_sources_used -ne $false) { throw "source policy failed" }
           if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found" }
           $gui = Start-Process -FilePath ".\package\arnis-korea.exe" -ArgumentList "--self-test-gui" -Wait -PassThru
           if ($gui.ExitCode -ne 0) { throw "GUI self-test failed with $($gui.ExitCode)" }
@@ -137,8 +120,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-0.2.0-windows-x86_64
+          name: arnis-korea-0.5.0-windows-x86_64
           path: |
-            arnis-korea-0.2.0-windows-x86_64.zip
+            arnis-korea-0.5.0-windows-x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt

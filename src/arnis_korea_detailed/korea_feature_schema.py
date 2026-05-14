@@ -4,7 +4,19 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-SUPPORTED_CLASSES = {"road", "building", "water", "green", "rail"}
+SUPPORTED_CLASSES = {
+    "road",
+    "road_major",
+    "road_minor",
+    "building",
+    "building_candidate",
+    "water",
+    "green",
+    "rail",
+    "campus_area",
+    "background",
+    "label_noise",
+}
 SUPPORTED_STYLE_PROFILES = {
     "apartment",
     "villa",

@@ -59,16 +59,19 @@ class ArnisKoreaApp:
         self.root.minsize(920, 640)
         self.running = False
 
-        self.output_dir = StringVar(value=str(ROOT / "world-hufs"))
+        self.output_dir = StringVar(value=str(ROOT / "world-hufs-naver"))
         self.bbox = StringVar(value=DEFAULT_BBOX)
         self.spawn_mode = StringVar(value="auto")
         self.spawn_lat = StringVar(value="")
         self.spawn_lng = StringVar(value="")
-        self.terrain = BooleanVar(value=True)
-        self.source = StringVar(value="osm")
+        self.terrain = BooleanVar(value=False)
+        self.source = StringVar(value="naver-only")
         self.building_mode = StringVar(value="full")
         self.interior = BooleanVar(value=False)
         self.roof = BooleanVar(value=True)
+        self.allow_static_storage = BooleanVar(value=False)
+        self.allow_static_analysis = BooleanVar(value=False)
+        self.accept_static_terms = BooleanVar(value=False)
         self.client_id = StringVar(value="")
         self.client_secret = StringVar(value="")
         self.cli_preview = StringVar(value="")
@@ -135,21 +138,26 @@ class ArnisKoreaApp:
         ttk.Label(spawn_values, text="lng").pack(side="left")
         ttk.Entry(spawn_values, textvariable=self.spawn_lng, width=16).pack(side="left", padx=(6, 0))
         self._row(form, "수동 좌표", spawn_values, 3)
-        source = ttk.Combobox(form, textvariable=self.source, values=["osm", "mock", "naver-static"], state="readonly")
+        source = ttk.Combobox(form, textvariable=self.source, values=["naver-only", "mock-naver", "naver-assisted", "osm"], state="readonly")
         self._row(form, "소스", source, 4)
         mode = ttk.Combobox(form, textvariable=self.building_mode, values=["full", "footprint-only", "roads-terrain", "campus-style"], state="readonly")
         self._row(form, "건물 생성 모드", mode, 5)
         checks = ttk.Frame(form)
-        ttk.Checkbutton(checks, text="terrain", variable=self.terrain, command=self.update_preview).pack(side="left", padx=(0, 18))
+        ttk.Checkbutton(checks, text="Naver terrain estimate experimental", variable=self.terrain, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(checks, text="내부 생성", variable=self.interior, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(checks, text="지붕 생성", variable=self.roof, command=self.update_preview).pack(side="left")
         self._row(form, "옵션", checks, 6)
+        consent = ttk.Frame(form)
+        ttk.Checkbutton(consent, text="Static Map 저장 동의", variable=self.allow_static_storage, command=self.update_preview).pack(side="left", padx=(0, 18))
+        ttk.Checkbutton(consent, text="Static Map 분석 동의", variable=self.allow_static_analysis, command=self.update_preview).pack(side="left", padx=(0, 18))
+        ttk.Checkbutton(consent, text="공식 Static Map 조건 확인", variable=self.accept_static_terms, command=self.update_preview).pack(side="left")
+        self._row(form, "Naver raster", consent, 7)
         for var in [self.output_dir, self.bbox, self.spawn_lat, self.spawn_lng, self.source, self.building_mode]:
             var.trace_add("write", lambda *_: self.update_preview())
 
         actions = ttk.Frame(self.world_tab)
         actions.pack(fill="x", pady=(12, 8))
-        self.generate_button = ttk.Button(actions, text="Generate World", style="Primary.TButton", command=self.generate_world)
+        self.generate_button = ttk.Button(actions, text="Generate Naver-only World", style="Primary.TButton", command=self.generate_world)
         self.generate_button.pack(side="left")
         ttk.Button(actions, text="월드 폴더 열기", command=lambda: open_path(Path(self.output_dir.get()))).pack(side="left", padx=(8, 0))
 
@@ -194,7 +202,7 @@ class ArnisKoreaApp:
         actions = ttk.Frame(self.tools_tab)
         actions.pack(fill="x")
         ttk.Button(actions, text="Plan Static Map 실행", command=self.plan_static).pack(side="left")
-        ttk.Button(actions, text="Mock Vectorize 실행", command=self.mock_vectorize).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Mock Naver-only 생성", command=self.mock_vectorize).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="출력 폴더 열기", command=lambda: open_path(Path(self.output_dir.get()))).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="로그 저장", command=self.save_log).pack(side="left", padx=(8, 0))
         ttk.Label(self.tools_tab, text="CLI 명령 미리보기").pack(anchor="w", pady=(14, 4))
@@ -205,7 +213,7 @@ class ArnisKoreaApp:
             "사용 순서\n"
             "1. 지도/범위 탭에서 bbox를 정합니다.\n"
             "2. 월드 생성 탭에서 출력 폴더와 스폰포인트, 건물 옵션을 선택합니다.\n"
-            "3. Generate World를 누릅니다.\n\n"
+            "3. Generate Naver-only World를 누릅니다.\n\n"
             "Minecraft Java saves 폴더\n"
             "%APPDATA%\\.minecraft\\saves\n\n"
             "생성된 world 폴더를 위 saves 폴더로 복사한 뒤 Minecraft Java Edition에서 선택합니다.\n\n"
@@ -295,7 +303,7 @@ class ArnisKoreaApp:
             self.map_result.insert("end", str(exc))
 
     def mock_vectorize(self) -> None:
-        self.run_cli(["mock-vectorize", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get()])
+        self.run_cli(["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--source", "mock-naver", f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}"], verify_world=True)
 
     def save_log(self) -> None:
         path = filedialog.asksaveasfilename(defaultextension=".log", filetypes=[("Log", "*.log"), ("Text", "*.txt")])
@@ -312,6 +320,13 @@ class ArnisKoreaApp:
         args = ["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--source", self.source.get(), f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}"]
         if self.terrain.get():
             args.append("--terrain")
+        if self.source.get() == "naver-only":
+            if self.allow_static_storage.get():
+                args.append("--allow-static-raster-storage")
+            if self.allow_static_analysis.get():
+                args.append("--allow-static-raster-analysis")
+            if self.accept_static_terms.get():
+                args.append("--accept-naver-static-raster-terms")
         if self.spawn_mode.get() == "auto":
             lat, lng = bbox_center(self.bbox.get())
             args.extend([f"--spawn-lat={lat}", f"--spawn-lng={lng}"])
@@ -331,8 +346,11 @@ class ArnisKoreaApp:
     def generate_world(self) -> None:
         if self.running:
             return
-        if self.source.get() == "naver-static":
-            messagebox.showwarning("라이선스 확인 필요", "Naver Static 소스는 명시적인 라이선스 확인이 필요합니다. 먼저 OSM 또는 Mock으로 생성하세요.")
+        if self.source.get() == "naver-only" and not (self.allow_static_storage.get() and self.allow_static_analysis.get() and self.accept_static_terms.get()):
+            messagebox.showwarning("라이선스 확인 필요", "Naver-only 생성에는 Static Map 저장/분석 동의와 공식 조건 확인이 필요합니다.")
+            return
+        if self.source.get() == "naver-only" and (not self.client_id.get().strip() or not self.client_secret.get().strip()):
+            messagebox.showwarning("네이버 API 키 필요", "네이버 API 탭에서 Client ID/Client Secret을 저장하거나 입력하세요.")
             return
         try:
             args = self.build_generate_args()
@@ -347,7 +365,11 @@ class ArnisKoreaApp:
             self.running = True
             self.root.after(0, lambda: self.generate_button.configure(state="disabled"))
             self.root.after(0, lambda: self.append_log(f"$ {' '.join(command)}\n"))
-            result = subprocess.run(command, cwd=ROOT, check=False, text=True, encoding="utf-8", errors="replace", capture_output=True)
+            env = os.environ.copy()
+            if self.client_id.get().strip() and self.client_secret.get().strip():
+                env["NAVER_MAPS_CLIENT_ID"] = self.client_id.get().strip()
+                env["NAVER_MAPS_CLIENT_SECRET"] = self.client_secret.get().strip()
+            result = subprocess.run(command, cwd=ROOT, check=False, text=True, encoding="utf-8", errors="replace", capture_output=True, env=env)
             stdout = result.stdout or ""
             stderr = result.stderr or ""
             self.root.after(0, lambda: self.append_log(stdout + stderr + f"\nreturncode={result.returncode}\n"))

@@ -92,7 +92,8 @@ def build_static_map_url(params: dict[str, Any]) -> str:
 
 
 def _hash_bytes(data: bytes) -> dict[str, Any]:
-    return {"bytes": len(data), "sha256_prefix": hashlib.sha256(data).hexdigest()[:16]}
+    digest = hashlib.sha256(data).hexdigest()
+    return {"bytes": len(data), "sha256": digest, "sha256_prefix": digest[:16]}
 
 
 def probe_static_map(
@@ -161,7 +162,7 @@ def download_static_map_if_allowed(
             "executed": True,
             "status": response.status,
             "content_type": response.headers.get("content-type"),
-            "size": len(data),
+            **_hash_bytes(data),
             "saved": True,
             "output_path": str(output_path),
         }

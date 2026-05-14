@@ -27,7 +27,9 @@ from arnis_korea_detailed.korea_feature_schema import (
     STYLE_PROFILES,
     normalized_document,
 )
+from arnis_korea_detailed.minimal_world_writer import write_world
 from arnis_korea_detailed.mock_raster_provider import create_mock_raster
+from arnis_korea_detailed.naver_synthetic_layer import write_synthetic_layer
 from arnis_korea_detailed.naver_static_map_provider import (
     download_static_map_if_allowed,
     key_source_status,
@@ -35,10 +37,11 @@ from arnis_korea_detailed.naver_static_map_provider import (
 )
 from arnis_korea_detailed.raster_mosaic import single_image_mosaic
 from arnis_korea_detailed.segment_map_image import segment_pixels
+from arnis_korea_detailed.source_policy import write_source_policy_report
 from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
 from arnis_korea_detailed.vectorize_features import vectorize_segments
 
-VERSION = "0.2.0"
+VERSION = "0.5.0"
 STATIC_TERMS_FLAG = "--accept-naver-static-raster-terms"
 FORBIDDEN_OUTPUT_MARKERS = (
     "/mnt/minecraft-data/server/world",
@@ -127,12 +130,24 @@ def plan_static(args: argparse.Namespace) -> dict[str, Any]:
     return plan
 
 
+def raster_features_from_path(raster: Path, bbox: dict[str, float]) -> list[Any]:
+    pixels = single_image_mosaic(raster)
+    return cleanup_features(vectorize_segments(segment_pixels(pixels), bbox))
+
+
 def mock_features(args: argparse.Namespace, bbox: dict[str, float] | None = None) -> tuple[list[Any], Path]:
     bbox = bbox or parse_bbox(getattr(args, "bbox", None), getattr(args, "bbox_file", None))
     raster = create_mock_raster(args.mock_raster, args.mock_width, args.mock_height)
-    pixels = single_image_mosaic(raster)
-    features = cleanup_features(vectorize_segments(segment_pixels(pixels), bbox))
+    features = raster_features_from_path(raster, bbox)
     return features, raster
+
+
+def verify_world_files(output_dir: Path) -> dict[str, Any]:
+    return {
+        "level_dat": (output_dir / "level.dat").exists(),
+        "region_dir": (output_dir / "region").is_dir(),
+        "mca_files": len(list((output_dir / "region").glob("*.mca"))) if (output_dir / "region").is_dir() else 0,
+    }
 
 
 def write_feature_document(args: argparse.Namespace, source: str, features: list[Any], bbox: dict[str, float], metadata: dict[str, Any]) -> Path:
@@ -235,6 +250,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
     args.output_dir = safe_output_dir(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     bbox = parse_bbox(args.bbox, args.bbox_file)
+    if args.source == "naver-assisted":
+        raise ValueError("naver-assisted hybrid mode is reserved and not implemented in v0.5; use naver-only or mock-naver")
     static_result = {"executed": False, "reason": "source_not_naver_static"}
     features: list[Any] = []
     metadata: dict[str, Any] = {
@@ -247,24 +264,32 @@ def cmd_generate(args: argparse.Namespace) -> int:
             "status": "MVP mode",
             "note": "현재 building-mode는 upstream Arnis 직접 옵션이 아니라 Arnis Korea metadata로 기록됩니다.",
         },
+        "source_policy": "naver_only" if args.source in {"naver-only", "mock-naver", "naver-static"} else "legacy_or_hybrid",
     }
 
-    if args.source == "mock":
+    if args.source in {"mock", "mock-naver"}:
         features, raster = mock_features(args, bbox)
         metadata["mock_raster"] = str(raster)
-    elif args.source == "naver-static":
+    elif args.source in {"naver-static", "naver-only"}:
         if not (args.allow_static_raster_storage and args.allow_static_raster_analysis and args.accept_naver_static_raster_terms):
-            raise ValueError(f"naver-static requires --allow-static-raster-storage --allow-static-raster-analysis {STATIC_TERMS_FLAG}")
+            raise ValueError(f"{args.source} requires --allow-static-raster-storage --allow-static-raster-analysis {STATIC_TERMS_FLAG}")
         plan = plan_static(args)
+        if len(plan.get("tiles", [])) > args.max_static_requests:
+            raise ValueError(f"Static Map request plan has {len(plan.get('tiles', []))} requests; max is {args.max_static_requests}")
         key_id_file, key_file = naver_key_paths(args)
+        raster_dir = args.output_dir / "naver_raster"
+        raster_name = f"static_{args.maptype}_000.{args.format.replace('jpeg', 'jpg').replace('png8', 'png')}"
         static_result = download_static_map_if_allowed(
             plan["tiles"][0]["params"],
-            args.output_dir / "static_map_sample.png",
+            raster_dir / raster_name,
             allow_storage=args.allow_static_raster_storage,
             allow_analysis=args.allow_static_raster_analysis,
             key_id_file=key_id_file,
             key_file=key_file,
         )
+        if not static_result.get("executed"):
+            raise ValueError(f"official Naver Static Map download did not execute: {static_result.get('reason')}")
+        features = raster_features_from_path(Path(static_result["output_path"]), bbox)
         metadata["static_map_request_plan"] = plan
         metadata["static_map_download"] = static_result
 
@@ -283,7 +308,43 @@ def cmd_generate(args: argparse.Namespace) -> int:
             roof=args.roof,
             scale=args.arnis_scale,
         )
-    print(json.dumps({"output_dir": str(args.output_dir), "features": str(feature_path), "arnis": arnis_result, "static_map": static_result}, ensure_ascii=False, indent=2))
+    world_result: dict[str, Any] = {"executed": False, "reason": "source_not_naver_only"}
+    synthetic_paths: dict[str, str] = {}
+    if args.source in {"naver-only", "mock-naver", "naver-static"}:
+        synthetic_paths = write_synthetic_layer(args.output_dir, features, bbox, args.source, args.building_mode)
+        terrain_source = "naver_terrain_raster_estimated" if args.terrain and args.maptype == "terrain" else "flat"
+        world_result = write_world(
+            args.output_dir,
+            Path(synthetic_paths["world_features"]),
+            bbox,
+            args.source,
+            terrain_source,
+            args.building_mode,
+        )
+        source_report = write_source_policy_report(
+            args.output_dir / "source-policy-report.json",
+            args.source,
+            {
+                "static_map": static_result,
+                "synthetic_layer": synthetic_paths,
+                "world": world_result,
+            },
+        )
+        world_result["source_policy_report"] = str(source_report)
+    result = {
+        "output_dir": str(args.output_dir),
+        "features": str(feature_path),
+        "synthetic_layer": synthetic_paths,
+        "arnis": arnis_result,
+        "world": world_result,
+        "world_verification": verify_world_files(args.output_dir),
+        "static_map": static_result,
+        "source_policy": {
+            "source_policy": "naver_only" if args.source in {"naver-only", "mock-naver", "naver-static"} else "legacy_or_hybrid",
+            "external_non_naver_sources_used": False if args.source in {"naver-only", "mock-naver", "naver-static"} else None,
+        },
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if arnis_result.get("returncode", 0) == 0 else int(arnis_result.get("returncode", 1))
 
 
@@ -335,7 +396,7 @@ def parse_optional_bool(value: str) -> bool:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="arnis-korea", description="Generate Korean Minecraft Java worlds with Arnis and gated Naver Static Map support.")
+    parser = argparse.ArgumentParser(prog="arnis-korea", description="Generate Korean Minecraft Java worlds with official Naver-only private development support.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     help_cmd = sub.add_parser("help", help="Print top-level help")
@@ -346,8 +407,8 @@ def parse_args() -> argparse.Namespace:
     add_output_args(generate)
     add_static_args(generate)
     add_secret_args(generate)
-    generate.add_argument("--source", choices=["osm", "mock", "naver-static"], default="osm")
-    generate.add_argument("--terrain", action="store_true")
+    generate.add_argument("--source", choices=["osm", "naver-assisted", "naver-only", "mock-naver", "mock", "naver-static"], default="naver-only")
+    generate.add_argument("--terrain", type=parse_optional_bool, nargs="?", const=True, default=False, metavar="true|false")
     generate.add_argument("--spawn-lat", type=float)
     generate.add_argument("--spawn-lng", type=float)
     generate.add_argument("--interior", type=parse_optional_bool, default=None, metavar="true|false")
@@ -360,6 +421,7 @@ def parse_args() -> argparse.Namespace:
     generate.add_argument("--allow-static-raster-storage", action="store_true")
     generate.add_argument("--allow-static-raster-analysis", action="store_true")
     generate.add_argument("--accept-naver-static-raster-terms", action="store_true")
+    generate.add_argument("--max-static-requests", type=int, default=10)
     generate.set_defaults(func=cmd_generate)
 
     plan = sub.add_parser("plan-static", help="Plan official Naver Static Map raster requests")

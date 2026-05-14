@@ -67,7 +67,7 @@ def vectorize_segments(segments: list[list[str]], bbox: dict[str, float]) -> lis
             if len(xs) < 4:
                 continue
 
-            geometry_type = "line" if feature_class in {"road", "rail"} else "polygon"
+            geometry_type = "line" if feature_class in {"road", "road_major", "road_minor", "rail"} else "polygon"
             coords = (
                 _line_from_bbox(xs, ys, width, height, bbox)
                 if geometry_type == "line"
@@ -75,6 +75,11 @@ def vectorize_segments(segments: list[list[str]], bbox: dict[str, float]) -> lis
             )
             properties = {
                 "pixel_area": len(xs),
+                "bbox": [
+                    _pixel_to_lonlat(min(xs), max(ys), width, height, bbox),
+                    _pixel_to_lonlat(max(xs), min(ys), width, height, bbox),
+                ],
+                "confidence": 0.72 if feature_class != "background" else 0.2,
                 "height_source": "heuristic_fallback" if feature_class == "building" else None,
                 "estimated_levels": 5 if feature_class == "building" else None,
                 "building_type": "generic" if feature_class == "building" else None,

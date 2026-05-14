@@ -1,24 +1,31 @@
 # Architecture
 
-Arnis Korea는 Windows GUI와 CLI가 같은 Python core를 공유하고, 실제 Minecraft Java world 생성은 upstream Arnis binary에 위임합니다.
+Arnis Korea v0.5는 GUI/CLI가 같은 Python core를 호출하고, Naver-only 모드에서는 외부 지도 네트워크를 차단한 자체 Java Anvil writer로 world를 생성합니다.
 
 ## 구성
 
-- `scripts/arnis_korea_gui.py`: tkinter 기반 Windows GUI
+- `scripts/arnis_korea_gui.py`: tkinter Windows GUI, 기본 source는 `naver-only`
 - `scripts/arnis_korea_detailed.py`: CLI entrypoint
-- `src/arnis_korea_detailed/arnis_wrapper.py`: upstream Arnis command mapping
-- `src/arnis_korea_detailed/static_map_request_planner.py`: Static Map 요청 계획
-- `src/arnis_korea_detailed/naver_static_map_provider.py`: 공식 Static Map 단건 probe/download
-- `web/dynamic_selector.html`: bbox 선택용 local HTML
+- `src/arnis_korea_detailed/source_policy.py`: Naver-only source policy와 report
+- `src/arnis_korea_detailed/static_map_request_planner.py`: Static Map request plan
+- `src/arnis_korea_detailed/naver_static_map_provider.py`: 공식 Static Map probe/download
+- `src/arnis_korea_detailed/segment_map_image.py`: raster color segmentation
+- `src/arnis_korea_detailed/vectorize_features.py`: connected component vectorization
+- `src/arnis_korea_detailed/geometry_cleanup.py`: small object cleanup
+- `src/arnis_korea_detailed/naver_synthetic_layer.py`: synthetic feature layer
+- `src/arnis_korea_detailed/minimal_world_writer.py`: no-network Java world writer
 
-## 실행 흐름
+## 흐름
 
-1. GUI가 bbox와 생성 옵션을 수집합니다.
-2. GUI가 `arnis-korea-cli.exe generate` 명령을 생성해 실행합니다.
-3. CLI가 입력을 검증하고 metadata를 기록합니다.
-4. `arnis_wrapper`가 `bin/arnis-upstream.exe`에 bbox, terrain, interior, roof, spawn 옵션을 전달합니다.
-5. 생성 결과에서 `level.dat`, `region`, `.mca` 파일 존재를 확인합니다.
+1. GUI/CLI에서 bbox와 옵션을 입력합니다.
+2. `plan-static`이 공식 Static Map 요청 수와 params를 계산합니다.
+3. 사용자가 저장/분석 동의와 조건 확인을 명시한 경우에만 raster를 저장합니다.
+4. raster를 segment/vectorize/cleanup합니다.
+5. `features.normalized.json`을 작성합니다.
+6. Naver-derived synthetic layer를 작성합니다.
+7. minimal writer가 `level.dat`와 `region/*.mca`를 생성합니다.
+8. quality report와 source-policy report를 작성합니다.
 
-## Naver API
+## Renderer 선택
 
-Naver Static Map은 공식 endpoint만 사용합니다. GUI 테스트는 단건 요청으로 status, content-type, bytes, sha256 prefix만 표시하고 이미지를 저장하지 않습니다.
+v0.5는 patched upstream Arnis renderer 대신 `arnis_korea_minimal_anvil_writer`를 사용합니다. 이 writer는 process 안에서 동작하며 외부 HTTP를 호출하지 않습니다.
