@@ -681,6 +681,10 @@ def run_app(argv: list[str] | None = None) -> int:
     parser.add_argument("--safe-mode", action="store_true")
     args = parser.parse_args(argv)
     if CORE_IMPORT_ERROR is not None:
+        if args.self_test_gui:
+            write_boot_log("GUI_SELF_TEST_FAIL_CORE_IMPORT", CORE_IMPORT_ERROR)
+            print(f"GUI_SELF_TEST=FAIL latest_log={LATEST_LOG}", file=sys.stderr)
+            return 1
         raise RuntimeError("GUI core import failed") from CORE_IMPORT_ERROR
     if args.self_test_gui:
         return self_test_gui(safe_mode=args.safe_mode)
@@ -697,7 +701,10 @@ def main() -> int:
         return run_app()
     except Exception as exc:
         write_boot_log("GUI_BOOT_FAIL", exc)
-        show_startup_error()
+        if "--self-test-gui" not in sys.argv:
+            show_startup_error()
+        else:
+            print(f"GUI_SELF_TEST=FAIL latest_log={LATEST_LOG}", file=sys.stderr)
         return 1
 
 
