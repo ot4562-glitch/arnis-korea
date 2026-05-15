@@ -118,7 +118,8 @@ jobs:
           if (-not (Test-Path "$project\world_validation.json")) { throw "world_validation.json not found" }
           if (-not (Test-Path "$project\arnis-korea-quality-report.md")) { throw "quality report not found" }
           if (-not (Test-Path "$project\minecraft_load_smoke.json")) { throw "minecraft_load_smoke.json not found" }
-          foreach ($preview in @("original_static_map.png", "segmentation_preview.png", "class_mask_roads.png", "class_mask_buildings.png", "class_mask_green_water.png", "world_overlay_preview.png")) {
+          if (-not (Test-Path "$project\quality_auto_check.json")) { throw "quality_auto_check.json not found" }
+          foreach ($preview in @("original_static_map.png", "source_or_mock_raster.png", "segmentation_preview.png", "class_mask_roads.png", "class_mask_buildings.png", "class_mask_green_water.png", "world_overlay_preview.png", "world_topdown_preview.png", "overlay_comparison.png")) {
             if (-not (Test-Path (Join-Path "$project\debug" $preview))) { throw "debug preview not found: $preview" }
           }
           $features = Get-Content "$project\features.normalized.json" -Raw | ConvertFrom-Json
@@ -132,13 +133,17 @@ jobs:
           if ($loadSmoke.passed -ne $true) { throw "Minecraft load smoke failed" }
           if ($loadSmoke.done_seen -ne $true) { throw "Minecraft load smoke did not see Done" }
           if ($loadSmoke.fatal_log_patterns.Count -gt 0) { throw "Minecraft load smoke fatal patterns found" }
+          $qualityAuto = Get-Content "$project\quality_auto_check.json" -Raw | ConvertFrom-Json
+          if ($qualityAuto.passed -ne $true) { throw "quality auto check failed" }
+          if ($qualityAuto.map_readability_score -lt 75) { throw "map readability score below gate" }
+          if (($qualityAuto.road_pixel_or_block_coverage + $qualityAuto.water_pixel_or_block_coverage + $qualityAuto.green_pixel_or_block_coverage) -le 0) { throw "no road/water/green signal in topdown preview" }
           $policy = Get-Content "$project\source-policy-report.json" -Raw | ConvertFrom-Json
           if ($policy.external_non_naver_sources_used -ne $false) { throw "source policy failed" }
           if ($policy.renderer_network_disabled -ne $true) { throw "renderer network policy failed" }
           if ($policy.synthetic_input_used -ne $true) { throw "synthetic input policy failed" }
           if ($policy.minecraft_load_smoke_required -ne $true) { throw "minecraft load smoke policy missing" }
           if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found" }
-          if (Get-ChildItem package -Recurse -Include *.png,*.mca,level.dat,session.lock,*.jar -ErrorAction SilentlyContinue) { throw "generated raster/world/debug/server file leaked into package" }
+          if (Get-ChildItem package -Recurse -Include *.png,*.mca,level.dat,session.lock,*.jar,quality_auto_check.json,minecraft_load_smoke.json -ErrorAction SilentlyContinue) { throw "generated raster/world/debug/server file leaked into package" }
           $gui = Start-Process -FilePath ".\package\arnis-korea.exe" -ArgumentList "--self-test-gui" -Wait -PassThru
           if ($gui.ExitCode -ne 0) { throw "GUI self-test failed with $($gui.ExitCode)" }
 

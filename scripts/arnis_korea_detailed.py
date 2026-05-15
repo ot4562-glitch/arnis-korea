@@ -45,6 +45,7 @@ from arnis_korea_detailed.output_layout import DEFAULT_WORLD_NAME, PROJECT_DIR_N
 from arnis_korea_detailed.source_policy import write_source_policy_report
 from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
 from arnis_korea_detailed.vectorize_features import vectorize_segments
+from arnis_korea_detailed.visual_quality import write_visual_quality_outputs
 
 VERSION = "0.7.0"
 STATIC_TERMS_FLAG = "--accept-naver-static-raster-terms"
@@ -509,6 +510,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         world_result["source_policy_report"] = str(source_report)
         validation = validate_world_layout(layout.world_dir, layout.metadata_dir)
         world_result["validation"] = validation
+        source_policy_doc = json.loads(source_report.read_text(encoding="utf-8"))
         minecraft_load_smoke: dict[str, Any] = {"executed": False, "reason": "not_requested"}
         if args.validate_minecraft_load:
             minecraft_load_smoke = run_minecraft_load_smoke(
@@ -526,6 +528,19 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 raise ValueError("Minecraft load smoke failed; see arnis_korea_project/minecraft_load_smoke.json")
         else:
             world_result["minecraft_load_smoke"] = minecraft_load_smoke
+        quality_auto_check = write_visual_quality_outputs(
+            layout.metadata_dir,
+            Path(synthetic_paths["world_features"]),
+            bbox,
+            filter_stats,
+            validation,
+            source_policy_doc,
+            minecraft_load_smoke,
+            args.building_mode,
+        )
+        world_result["quality_auto_check"] = quality_auto_check
+        if args.validate_minecraft_load and not quality_auto_check.get("passed"):
+            raise ValueError("quality auto check failed; see arnis_korea_project/quality_auto_check.json")
         export_result = copy_playable_world_to_saves(layout.world_dir) if args.minecraft_saves_export else {"executed": False}
         world_result["minecraft_saves_export"] = export_result
     else:

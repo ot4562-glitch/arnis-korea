@@ -27,8 +27,11 @@ FORBIDDEN_WORLD_ROOT_NAMES = {
     "source-policy-report.json",
     "arnis-korea-quality-report.md",
     "world_validation.json",
+    "minecraft_load_smoke.json",
+    "quality_auto_check.json",
     "debug",
     "logs",
+    "arnis_korea_project",
 }
 
 
