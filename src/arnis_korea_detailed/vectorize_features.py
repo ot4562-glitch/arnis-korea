@@ -64,7 +64,7 @@ def vectorize_segments(segments: list[list[str]], bbox: dict[str, float]) -> lis
                         if segments[ny][nx] == feature_class:
                             visited[ny][nx] = True
                             queue.append((nx, ny))
-            if len(xs) < 4:
+            if len(xs) < 4 and feature_class != "label_noise":
                 continue
 
             geometry_type = "line" if feature_class in {"road", "road_major", "road_minor", "rail"} else "polygon"
@@ -75,6 +75,10 @@ def vectorize_segments(segments: list[list[str]], bbox: dict[str, float]) -> lis
             )
             properties = {
                 "pixel_area": len(xs),
+                "pixel_width": max(xs) - min(xs) + 1,
+                "pixel_height": max(ys) - min(ys) + 1,
+                "aspect_ratio": round((max(max(xs) - min(xs) + 1, max(ys) - min(ys) + 1) / max(1, min(max(xs) - min(xs) + 1, max(ys) - min(ys) + 1))), 3),
+                "length_estimate_px": max(max(xs) - min(xs) + 1, max(ys) - min(ys) + 1) if geometry_type == "line" else None,
                 "bbox": [
                     _pixel_to_lonlat(min(xs), max(ys), width, height, bbox),
                     _pixel_to_lonlat(max(xs), min(ys), width, height, bbox),

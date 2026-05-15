@@ -21,6 +21,11 @@ BLOCKS = {
     "gray_concrete": "minecraft:gray_concrete",
     "black_concrete": "minecraft:black_concrete",
     "light_gray_concrete": "minecraft:light_gray_concrete",
+    "white_concrete": "minecraft:white_concrete",
+    "blue_concrete": "minecraft:blue_concrete",
+    "green_concrete": "minecraft:green_concrete",
+    "moss_block": "minecraft:moss_block",
+    "oak_leaves": "minecraft:oak_leaves",
     "stone_bricks": "minecraft:stone_bricks",
     "bricks": "minecraft:bricks",
     "smooth_stone": "minecraft:smooth_stone",
@@ -260,7 +265,7 @@ def _lonlat_to_world(point: list[float], bbox: dict[str, float], size: int) -> t
     return (max(0, min(size - 1, int(round(x_ratio * (size - 1))))), max(0, min(size - 1, int(round(z_ratio * (size - 1))))))
 
 
-def _draw_line(blocks: dict[tuple[int, int, int], str], a: tuple[int, int], b: tuple[int, int], block: str, width: int) -> None:
+def _draw_line(blocks: dict[tuple[int, int, int], str], a: tuple[int, int], b: tuple[int, int], block: str, width: int, edge_block: str | None = None) -> None:
     x0, z0 = a
     x1, z1 = b
     steps = max(abs(x1 - x0), abs(z1 - z0), 1)
@@ -268,23 +273,40 @@ def _draw_line(blocks: dict[tuple[int, int, int], str], a: tuple[int, int], b: t
     for i in range(steps + 1):
         x = round(x0 + (x1 - x0) * i / steps)
         z = round(z0 + (z1 - z0) * i / steps)
+        if edge_block:
+            for dx in range(-(radius + 1), radius + 2):
+                for dz in range(-(radius + 1), radius + 2):
+                    if abs(dx) > radius or abs(dz) > radius:
+                        blocks[(x + dx, GROUND_Y + 1, z + dz)] = edge_block
         for dx in range(-radius, radius + 1):
             for dz in range(-radius, radius + 1):
                 blocks[(x + dx, GROUND_Y + 1, z + dz)] = block
 
 
-def _fill_bbox(blocks: dict[tuple[int, int, int], str], points: list[tuple[int, int]], block: str, height: int = 1) -> None:
+def _fill_bbox(blocks: dict[tuple[int, int, int], str], points: list[tuple[int, int]], block: str, height: int = 1, outline_block: str | None = None) -> None:
     if not points:
         return
     min_x, max_x = min(x for x, _ in points), max(x for x, _ in points)
     min_z, max_z = min(z for _, z in points), max(z for _, z in points)
     for x in range(min_x, max_x + 1):
         for z in range(min_z, max_z + 1):
+            current_block = outline_block if outline_block and (x in {min_x, max_x} or z in {min_z, max_z}) else block
             for y in range(GROUND_Y + 1, GROUND_Y + 1 + height):
-                blocks[(x, y, z)] = block
+                blocks[(x, y, z)] = current_block
 
 
-def _blocks_from_features(world_doc: dict[str, Any], bbox: dict[str, float], size: int) -> dict[tuple[int, int, int], str]:
+def _mark_spawn(blocks: dict[tuple[int, int, int], str], size: int) -> None:
+    center = size // 2
+    for x in range(center - 2, center + 3):
+        for z in range(center - 2, center + 3):
+            blocks[(x, GROUND_Y + 1, z)] = "smooth_stone"
+    for x in range(center - 1, center + 2):
+        blocks[(x, GROUND_Y + 2, center)] = "white_concrete"
+    for z in range(center - 1, center + 2):
+        blocks[(center, GROUND_Y + 2, z)] = "white_concrete"
+
+
+def _blocks_from_features(world_doc: dict[str, Any], bbox: dict[str, float], size: int, building_mode: str) -> dict[tuple[int, int, int], str]:
     blocks: dict[tuple[int, int, int], str] = {}
     for x in range(size):
         for z in range(size):
@@ -300,14 +322,18 @@ def _blocks_from_features(world_doc: dict[str, Any], bbox: dict[str, float], siz
         if feature.get("geometry_type") == "line":
             width = int(hint.get("width", 2))
             block = str(hint.get("block", "gray_concrete"))
+            edge_block = str(hint.get("edge_block")) if hint.get("edge_block") else None
             for a, b in zip(points, points[1:]):
-                _draw_line(blocks, a, b, block, width)
+                _draw_line(blocks, a, b, block, width, edge_block=edge_block)
         elif cls in {"building", "building_candidate", "campus_area"}:
-            _fill_bbox(blocks, points, str(hint.get("block", "stone_bricks")), int(hint.get("height", 8)))
+            if building_mode == "roads-green-water-only":
+                continue
+            _fill_bbox(blocks, points, str(hint.get("block", "light_gray_concrete")), int(hint.get("height", 2)), str(hint.get("outline_block", "smooth_stone")))
         elif cls == "water":
             _fill_bbox(blocks, points, "water", 1)
         elif cls == "green":
-            _fill_bbox(blocks, points, "grass_block", 1)
+            _fill_bbox(blocks, points, str(hint.get("block", "grass_block")), 1)
+    _mark_spawn(blocks, size)
     return blocks
 
 
@@ -352,11 +378,12 @@ def write_world(
     building_mode: str,
     world_name: str = "Arnis Korea Naver World",
     size: int = 128,
+    quality: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata_dir.mkdir(parents=True, exist_ok=True)
     world_doc = json.loads(world_features_path.read_text(encoding="utf-8"))
-    blocks = _blocks_from_features(world_doc, bbox, size)
+    blocks = _blocks_from_features(world_doc, bbox, size, building_mode)
     region_path = _write_region(output_dir, blocks, size)
     _write_level_dat(output_dir, world_name, size // 2, size // 2)
     (output_dir / "session.lock").write_bytes(struct.pack(">q", int(time.time() * 1000)))
@@ -378,11 +405,14 @@ def write_world(
         "region_file": str(region_path),
         "mca_count": len(list((output_dir / "region").glob("*.mca"))),
         "feature_count": len(world_doc.get("features", [])),
+        "render_mode": building_mode,
+        "map_readability_score": (quality or {}).get("map_readability_score"),
     }
+    report.update(quality or {})
     (metadata_dir / "arnis-korea-quality-report.md").write_text(
         "\n".join(
             [
-                "# Arnis Korea v0.5.1 Naver-only Quality Report",
+                "# Arnis Korea v0.6.0 Naver-only Quality Report",
                 "",
                 f"- source_mode: {source_mode}",
                 f"- world_name: {world_name}",
@@ -394,8 +424,24 @@ def write_world(
                 f"- external_dem_used: false",
                 f"- height_source: {report['height_source']}",
                 f"- exact_height_available: false",
+                f"- render_mode: {building_mode}",
                 f"- feature_count: {report['feature_count']}",
+                f"- raster_source_count: {report.get('raster_source_count', 1)}",
+                f"- feature_count_before_filter: {report.get('feature_count_before_filter', report['feature_count'])}",
+                f"- feature_count_after_filter: {report.get('feature_count_after_filter', report['feature_count'])}",
+                f"- dropped_noise_count: {report.get('dropped_noise_count', 0)}",
+                f"- class_counts: {json.dumps(report.get('class_counts_after', {}), ensure_ascii=False, sort_keys=True)}",
+                f"- building_count_before: {report.get('building_count_before', 0)}",
+                f"- building_count_after: {report.get('building_count_after', 0)}",
+                f"- road_length_estimate: {report.get('road_length_estimate', 0)}",
+                f"- water_green_area_estimate: {report.get('water_green_area_estimate', 0)}",
+                f"- map_readability_score: {report.get('map_readability_score', 0)}",
                 f"- mca_count: {report['mca_count']}",
+                "",
+                "## Warnings",
+                "",
+                "- static map labels/icons may cause noise",
+                "- exact building height unavailable",
             ]
         )
         + "\n",

@@ -8,7 +8,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ARTIFACT_NAME: arnis-korea-0.5.2-windows-x86_64
+  ARTIFACT_NAME: arnis-korea-0.6.0-windows-x86_64
 
 permissions:
   contents: read
@@ -96,9 +96,9 @@ jobs:
           & .\package\arnis-korea-cli.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
           New-Item -ItemType Directory -Force smoke | Out-Null
           & .\package\arnis-korea-cli.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir smoke\outputs
-          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\smoke-output --world-name "world-hufs-naver-smoke" --source mock-naver --terrain=false --interior=false --roof=true --building-mode full
+          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\smoke-output --world-name "world-readable-smoke" --source mock-naver --terrain=false --interior=false --roof=true --building-mode map-readable --noise-filter-level high --road-width-multiplier 1.5
 
-          $world = "smoke\smoke-output\world-hufs-naver-smoke"
+          $world = "smoke\smoke-output\world-readable-smoke"
           $project = "smoke\smoke-output\arnis_korea_project"
           if (-not (Test-Path "$world\level.dat")) { throw "level.dat not found" }
           if (-not (Test-Path "$world\session.lock")) { throw "session.lock not found" }
@@ -110,6 +110,14 @@ jobs:
           }
           if (-not (Test-Path "$project\world_validation.json")) { throw "world_validation.json not found" }
           if (-not (Test-Path "$project\arnis-korea-quality-report.md")) { throw "quality report not found" }
+          foreach ($preview in @("original_static_map.png", "segmentation_preview.png", "class_mask_roads.png", "class_mask_buildings.png", "class_mask_green_water.png", "world_overlay_preview.png")) {
+            if (-not (Test-Path (Join-Path "$project\debug" $preview))) { throw "debug preview not found: $preview" }
+          }
+          $features = Get-Content "$project\features.normalized.json" -Raw | ConvertFrom-Json
+          if ($features.metadata.filtering.feature_count_after_filter -ge $features.metadata.filtering.feature_count_before_filter) { throw "filter did not reduce features" }
+          if ($features.metadata.filtering.dropped_noise_count -le 0) { throw "noise filter did not drop noise" }
+          $quality = Get-Content "$project\arnis-korea-quality-report.md" -Raw
+          if ($quality -notmatch "map_readability_score") { throw "map_readability_score missing" }
           $validation = Get-Content "$project\world_validation.json" -Raw | ConvertFrom-Json
           if ($validation.valid -ne $true) { throw "world validation failed" }
           $policy = Get-Content "$project\source-policy-report.json" -Raw | ConvertFrom-Json
@@ -117,6 +125,7 @@ jobs:
           if ($policy.renderer_network_disabled -ne $true) { throw "renderer network policy failed" }
           if ($policy.synthetic_input_used -ne $true) { throw "synthetic input policy failed" }
           if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found" }
+          if (Get-ChildItem package -Recurse -Include *.png,*.mca,level.dat,session.lock -ErrorAction SilentlyContinue) { throw "generated raster/world/debug file leaked into package" }
           $gui = Start-Process -FilePath ".\package\arnis-korea.exe" -ArgumentList "--self-test-gui" -Wait -PassThru
           if ($gui.ExitCode -ne 0) { throw "GUI self-test failed with $($gui.ExitCode)" }
 
@@ -148,8 +157,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-0.5.2-windows-x86_64
+          name: arnis-korea-0.6.0-windows-x86_64
           path: |
-            arnis-korea-0.5.2-windows-x86_64.zip
+            arnis-korea-0.6.0-windows-x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt

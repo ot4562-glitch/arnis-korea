@@ -21,7 +21,8 @@ if hasattr(sys.stderr, "reconfigure"):
 from arnis_korea_detailed.arnis_wrapper import run_arnis_if_explicit
 from arnis_korea_detailed.arnis_no_network_renderer import run_patched_arnis_renderer
 from arnis_korea_detailed.export_arnis_features import arnis_compatible_export_plan, write_normalized_features
-from arnis_korea_detailed.geometry_cleanup import cleanup_features
+from arnis_korea_detailed.debug_preview import write_debug_previews
+from arnis_korea_detailed.geometry_cleanup import cleanup_feature_set, cleanup_features
 from arnis_korea_detailed.korea_feature_schema import (
     HEIGHT_SOURCE_PRIORITY,
     MINECRAFT_PALETTE_NOTES,
@@ -44,7 +45,7 @@ from arnis_korea_detailed.source_policy import write_source_policy_report
 from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
 from arnis_korea_detailed.vectorize_features import vectorize_segments
 
-VERSION = "0.5.2"
+VERSION = "0.6.0"
 STATIC_TERMS_FLAG = "--accept-naver-static-raster-terms"
 FORBIDDEN_OUTPUT_MARKERS = (
     "/mnt/minecraft-data/server/world",
@@ -133,16 +134,39 @@ def plan_static(args: argparse.Namespace) -> dict[str, Any]:
     return plan
 
 
-def raster_features_from_path(raster: Path, bbox: dict[str, float]) -> list[Any]:
+BUILDING_MODES = ["map-readable", "footprint-only", "low-rise", "full-experimental", "roads-green-water-only"]
+
+
+def raster_features_from_path(
+    raster: Path,
+    bbox: dict[str, float],
+    *,
+    building_min_area: int | None = None,
+    noise_filter_level: str = "medium",
+    debug_dir: Path | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
     pixels = single_image_mosaic(raster)
-    return cleanup_features(vectorize_segments(segment_pixels(pixels), bbox))
+    segments = segment_pixels(pixels)
+    raw_features = vectorize_segments(segments, bbox)
+    features, stats = cleanup_feature_set(raw_features, building_min_area=building_min_area, noise_filter_level=noise_filter_level)
+    stats["road_length_estimate"] = sum(int(feature.properties.get("length_estimate_px", 0)) for feature in features if feature.geometry_type == "line" and feature.feature_class in {"road", "road_major", "road_minor"})
+    stats["water_green_area_estimate"] = sum(int(feature.properties.get("pixel_area", 0)) for feature in features if feature.feature_class in {"water", "green"})
+    if debug_dir:
+        stats["debug_previews"] = write_debug_previews(debug_dir, raster, pixels, segments, features, bbox)
+    return features, stats
 
 
-def mock_features(args: argparse.Namespace, bbox: dict[str, float] | None = None) -> tuple[list[Any], Path]:
+def mock_features(args: argparse.Namespace, bbox: dict[str, float] | None = None, debug_dir: Path | None = None) -> tuple[list[Any], Path, dict[str, Any]]:
     bbox = bbox or parse_bbox(getattr(args, "bbox", None), getattr(args, "bbox_file", None))
     raster = create_mock_raster(args.mock_raster, args.mock_width, args.mock_height)
-    features = raster_features_from_path(raster, bbox)
-    return features, raster
+    features, stats = raster_features_from_path(
+        raster,
+        bbox,
+        building_min_area=getattr(args, "building_min_area", None),
+        noise_filter_level=getattr(args, "noise_filter_level", "medium"),
+        debug_dir=debug_dir,
+    )
+    return features, raster, stats
 
 
 def verify_world_files(output_dir: Path) -> dict[str, Any]:
@@ -162,6 +186,7 @@ def write_feature_document(args: argparse.Namespace, source: str, features: list
             **metadata,
             "created_at": _now(),
             "source": source,
+            "filtering": metadata.get("filtering", {}),
             "license_gate": {
                 "naver_static_raster_storage": getattr(args, "allow_static_raster_storage", False),
                 "naver_static_raster_analysis": getattr(args, "allow_static_raster_analysis", False),
@@ -253,9 +278,9 @@ def cmd_mock_vectorize(args: argparse.Namespace) -> int:
     layout = build_output_layout(args.output_dir, getattr(args, "world_name", None), getattr(args, "project_metadata_dir", None))
     layout.metadata_dir.mkdir(parents=True, exist_ok=True)
     bbox = parse_bbox(args.bbox, args.bbox_file)
-    features, raster = mock_features(args, bbox)
-    path = write_feature_document(args, "mock_raster", features, bbox, {"mock_raster": str(raster)}, layout.metadata_dir)
-    print(json.dumps({"features": str(path), "feature_count": len(features), "mock_raster": str(raster)}, ensure_ascii=False, indent=2))
+    features, raster, stats = mock_features(args, bbox, layout.metadata_dir / "debug")
+    path = write_feature_document(args, "mock_raster", features, bbox, {"mock_raster": str(raster), "filtering": stats}, layout.metadata_dir)
+    print(json.dumps({"features": str(path), "feature_count": len(features), "mock_raster": str(raster), "filtering": stats}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -265,8 +290,8 @@ def cmd_export_features(args: argparse.Namespace) -> int:
     layout.metadata_dir.mkdir(parents=True, exist_ok=True)
     bbox = parse_bbox(args.bbox, args.bbox_file)
     if args.source == "mock":
-        features, raster = mock_features(args, bbox)
-        metadata = {"mock_raster": str(raster)}
+        features, raster, stats = mock_features(args, bbox, layout.metadata_dir / "debug")
+        metadata = {"mock_raster": str(raster), "filtering": stats}
     else:
         features = []
         metadata = {"export_mode": "empty_osm_base_features"}
@@ -352,15 +377,25 @@ def cmd_generate(args: argparse.Namespace) -> int:
         "roof": args.roof,
         "building_mode": {
             "value": args.building_mode,
-            "status": "MVP mode",
-            "note": "현재 building-mode는 upstream Arnis 직접 옵션이 아니라 Arnis Korea metadata로 기록됩니다.",
+            "status": "map-readable default" if args.building_mode == "map-readable" else "advanced",
+            "note": "v0.6.0 Naver-only 기본값은 지도처럼 읽히는 낮은 footprint/outline 렌더링입니다.",
+        },
+        "render_controls": {
+            "world_scale": args.world_scale,
+            "road_width_multiplier": args.road_width_multiplier,
+            "building_min_area": args.building_min_area,
+            "building_height_mode": args.building_height_mode,
+            "noise_filter_level": args.noise_filter_level,
+            "map_readable_preset": args.map_readable_preset,
         },
         "source_policy": "naver_only" if args.source in {"naver-only", "mock-naver", "naver-static"} else "legacy_or_hybrid",
     }
+    filter_stats: dict[str, Any] = {}
 
     if args.source in {"mock", "mock-naver"}:
-        features, raster = mock_features(args, bbox)
+        features, raster, filter_stats = mock_features(args, bbox, layout.metadata_dir / "debug")
         metadata["mock_raster"] = str(raster)
+        metadata["filtering"] = filter_stats
     elif args.source in {"naver-static", "naver-only"}:
         if not (args.allow_static_raster_storage and args.allow_static_raster_analysis and args.accept_naver_static_raster_terms):
             raise ValueError(f"{args.source} requires --allow-static-raster-storage --allow-static-raster-analysis {STATIC_TERMS_FLAG}")
@@ -380,10 +415,24 @@ def cmd_generate(args: argparse.Namespace) -> int:
         )
         if not static_result.get("executed"):
             raise ValueError(f"official Naver Static Map download did not execute: {static_result.get('reason')}")
-        features = raster_features_from_path(Path(static_result["output_path"]), bbox)
+        features, filter_stats = raster_features_from_path(
+            Path(static_result["output_path"]),
+            bbox,
+            building_min_area=args.building_min_area,
+            noise_filter_level=args.noise_filter_level,
+            debug_dir=layout.metadata_dir / "debug",
+        )
         metadata["static_map_request_plan"] = plan
         metadata["static_map_download"] = static_result
+        metadata["filtering"] = filter_stats
 
+    filter_stats.setdefault("feature_count_before_filter", len(features))
+    filter_stats.setdefault("feature_count_after_filter", len(features))
+    filter_stats.setdefault("dropped_noise_count", 0)
+    filter_stats.setdefault("class_counts_after", {})
+    filter_stats["raster_source_count"] = 1 if args.source in {"naver-only", "naver-static", "mock-naver", "mock"} else 0
+    filter_stats["render_mode"] = args.building_mode
+    filter_stats["map_readability_score"] = score_map_readability(filter_stats, args.building_mode)
     feature_path = write_feature_document(args, args.source, features, bbox, metadata, layout.metadata_dir)
     arnis_result = {"executed": False, "reason": "source_not_osm"}
     if args.source == "osm":
@@ -402,9 +451,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
     world_result: dict[str, Any] = {"executed": False, "reason": "source_not_naver_only"}
     synthetic_paths: dict[str, str] = {}
     if args.source in {"naver-only", "mock-naver", "naver-static"}:
-        synthetic_paths = write_synthetic_layer(layout.metadata_dir, features, bbox, args.source, args.building_mode)
+        synthetic_paths = write_synthetic_layer(layout.metadata_dir, features, bbox, args.source, args.building_mode, args.road_width_multiplier)
         terrain_source = "naver_terrain_raster_estimated" if args.terrain and args.maptype == "terrain" else "flat"
-        if args.writer == "minimal-debug":
+        writer = "arnis" if args.writer == "arnis" or (args.writer == "auto" and args.building_mode == "full-experimental") else "minimal-debug"
+        if writer == "minimal-debug":
             world_result = write_world(
                 layout.world_dir,
                 layout.metadata_dir,
@@ -414,8 +464,10 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 terrain_source,
                 args.building_mode,
                 world_name=layout.world_name,
+                size=max(128, min(512, int(round(128 * args.world_scale)))),
+                quality=filter_stats,
             )
-            world_result["compatibility_warning"] = True
+            world_result["compatibility_warning"] = False
         else:
             world_result = run_patched_arnis_renderer(
                 ROOT,
@@ -433,23 +485,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
             if world_result.get("returncode") != 0:
                 raise ValueError(f"patched Arnis renderer failed: {world_result.get('reason') or world_result.get('stderr_tail')}")
             quality_report = layout.metadata_dir / "arnis-korea-quality-report.md"
-            quality_report.write_text(
-                "\n".join(
-                    [
-                        "# Arnis Korea v0.5.2 Naver-only Quality Report",
-                        "",
-                        f"- writer: {world_result['writer']}",
-                        "- renderer_network_disabled: true",
-                        "- synthetic_input_used: true",
-                        f"- source_mode: {args.source}",
-                        f"- world_name: {layout.world_name}",
-                        f"- terrain_source: {terrain_source}",
-                        "- external_non_naver_sources_used: false",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            write_quality_report(quality_report, args.source, layout.world_name, terrain_source, world_result["writer"], args.building_mode, filter_stats)
         if args.clean_world_root and not args.keep_debug_in_world_root:
             world_result["cleaned_world_root_entries"] = clean_world_root(layout.world_dir)
         source_report = write_source_policy_report(
@@ -482,6 +518,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         "world_verification": verify_world_files(layout.world_dir),
         "world_validation": validation,
         "static_map": static_result,
+        "debug_previews": filter_stats.get("debug_previews", {}),
         "source_policy": {
             "source_policy": "naver_only" if args.source in {"naver-only", "mock-naver", "naver-static"} else "legacy_or_hybrid",
             "external_non_naver_sources_used": False if args.source in {"naver-only", "mock-naver", "naver-static"} else None,
@@ -494,6 +531,60 @@ def cmd_generate(args: argparse.Namespace) -> int:
 def cmd_version(_: argparse.Namespace) -> int:
     print(f"arnis-korea {VERSION}")
     return 0
+
+
+def score_map_readability(stats: dict[str, Any], building_mode: str) -> int:
+    counts = stats.get("class_counts_after", {})
+    road = int(counts.get("road", 0)) + int(counts.get("road_major", 0)) + int(counts.get("road_minor", 0))
+    water_green = int(counts.get("water", 0)) + int(counts.get("green", 0))
+    buildings = int(counts.get("building", 0)) + int(counts.get("building_candidate", 0))
+    score = 30
+    score += min(30, road * 10)
+    score += min(20, water_green * 10)
+    score += min(15, buildings * 5)
+    if building_mode == "full-experimental":
+        score -= 15
+    if int(stats.get("dropped_noise_count", 0)) > 0:
+        score += 5
+    return max(0, min(100, score))
+
+
+def write_quality_report(path: Path, source: str, world_name: str, terrain_source: str, writer: str, building_mode: str, stats: dict[str, Any]) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "# Arnis Korea v0.6.0 Naver-only Quality Report",
+                "",
+                f"- writer: {writer}",
+                "- renderer_network_disabled: true",
+                "- synthetic_input_used: true",
+                f"- source_mode: {source}",
+                f"- world_name: {world_name}",
+                f"- terrain_source: {terrain_source}",
+                "- external_non_naver_sources_used: false",
+                "- height_source: heuristic_from_naver_raster",
+                "- exact_height_available: false",
+                f"- raster_source_count: {stats.get('raster_source_count', 1)}",
+                f"- feature_count_before_filter: {stats.get('feature_count_before_filter', 0)}",
+                f"- feature_count_after_filter: {stats.get('feature_count_after_filter', 0)}",
+                f"- dropped_noise_count: {stats.get('dropped_noise_count', 0)}",
+                f"- class_counts: {json.dumps(stats.get('class_counts_after', {}), ensure_ascii=False, sort_keys=True)}",
+                f"- building_count_before: {stats.get('building_count_before', 0)}",
+                f"- building_count_after: {stats.get('building_count_after', 0)}",
+                f"- road_length_estimate: {stats.get('road_length_estimate', 0)}",
+                f"- water_green_area_estimate: {stats.get('water_green_area_estimate', 0)}",
+                f"- render_mode: {building_mode}",
+                f"- map_readability_score: {stats.get('map_readability_score', 0)}",
+                "",
+                "## Warnings",
+                "",
+                "- static map labels/icons may cause noise",
+                "- exact building height unavailable",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def cmd_help(args: argparse.Namespace) -> int:
@@ -558,7 +649,13 @@ def parse_args() -> argparse.Namespace:
     generate.add_argument("--no-interior", dest="interior", action="store_false")
     generate.add_argument("--roof", type=parse_optional_bool, default=None, metavar="true|false")
     generate.add_argument("--no-roof", dest="roof", action="store_false")
-    generate.add_argument("--building-mode", choices=["full", "footprint-only", "roads-terrain", "campus-style"], default="full")
+    generate.add_argument("--building-mode", choices=BUILDING_MODES, default="map-readable")
+    generate.add_argument("--world-scale", type=float, default=1.5)
+    generate.add_argument("--road-width-multiplier", type=float, default=1.5)
+    generate.add_argument("--building-min-area", type=int)
+    generate.add_argument("--building-height-mode", choices=["footprint", "low-rise", "heuristic"], default="low-rise")
+    generate.add_argument("--noise-filter-level", choices=["low", "medium", "high"], default="high")
+    generate.add_argument("--map-readable-preset", action="store_true", default=True)
     generate.add_argument("--arnis-scale", type=float)
     generate.add_argument("--arnis-upstream", type=Path, default=ROOT / "upstream" / "arnis")
     generate.add_argument("--allow-static-raster-storage", action="store_true")
@@ -570,7 +667,7 @@ def parse_args() -> argparse.Namespace:
     generate.add_argument("--clean-world-root", type=parse_optional_bool, default=True, metavar="true|false")
     generate.add_argument("--project-metadata-dir", type=Path)
     generate.add_argument("--keep-debug-in-world-root", type=parse_optional_bool, default=False, metavar="true|false")
-    generate.add_argument("--writer", choices=["arnis", "minimal-debug"], default="arnis")
+    generate.add_argument("--writer", choices=["auto", "arnis", "minimal-debug"], default="auto")
     generate.set_defaults(func=cmd_generate)
 
     plan = sub.add_parser("plan-static", help="Plan official Naver Static Map raster requests")
@@ -607,6 +704,8 @@ def parse_args() -> argparse.Namespace:
     add_output_args(mock)
     mock.add_argument("--world-name", default=DEFAULT_WORLD_NAME)
     mock.add_argument("--project-metadata-dir", type=Path)
+    mock.add_argument("--building-min-area", type=int)
+    mock.add_argument("--noise-filter-level", choices=["low", "medium", "high"], default="high")
     mock.set_defaults(func=cmd_mock_vectorize)
 
     export = sub.add_parser("export-features", help="Export normalized Korea feature schema")

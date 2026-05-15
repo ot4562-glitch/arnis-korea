@@ -20,15 +20,15 @@ CLASS_TO_TAGS = {
 }
 
 WORLD_HINTS = {
-    "road_major": {"block": "black_concrete", "width": 5},
+    "road_major": {"block": "light_gray_concrete", "edge_block": "gray_concrete", "width": 5},
     "road_minor": {"block": "gray_concrete", "width": 3},
     "road": {"block": "gray_concrete", "width": 3},
-    "building_candidate": {"block": "light_gray_concrete", "height": 10},
-    "building": {"block": "stone_bricks", "height": 10},
+    "building_candidate": {"block": "light_gray_concrete", "outline_block": "smooth_stone", "height": 3},
+    "building": {"block": "white_concrete", "outline_block": "smooth_stone", "height": 3},
     "green": {"block": "grass_block"},
     "water": {"block": "water"},
     "rail": {"block": "iron_block", "width": 1},
-    "campus_area": {"block": "smooth_stone", "height": 8},
+    "campus_area": {"block": "smooth_stone", "outline_block": "light_gray_concrete", "height": 3},
 }
 
 
@@ -46,6 +46,7 @@ def build_synthetic_documents(
     bbox: dict[str, float],
     source_mode: str,
     building_mode: str,
+    road_width_multiplier: float = 1.0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     osm_elements: list[dict[str, Any]] = []
     world_features: list[dict[str, Any]] = []
@@ -53,16 +54,24 @@ def build_synthetic_documents(
     way_id = 9_100_000_000
     for index, feature in enumerate(features, start=1):
         cls = _feature_class(feature)
+        if cls in {"building", "building_candidate", "campus_area"} and building_mode == "roads-green-water-only":
+            continue
         tags = dict(CLASS_TO_TAGS.get(cls, {}))
         hint = dict(WORLD_HINTS.get(cls, {}))
+        if cls in {"road", "road_major", "road_minor"}:
+            hint["width"] = max(1, int(round(float(hint.get("width", 2)) * road_width_multiplier)))
         if cls in {"building", "building_candidate", "campus_area"}:
             hint["building_mode"] = building_mode
             hint["height_source"] = "heuristic_from_naver_raster"
             if building_mode == "footprint-only":
-                hint["height"] = 2
-            elif building_mode == "campus-style":
-                hint["height"] = 8
-                hint["block"] = "bricks"
+                hint["height"] = 1
+            elif building_mode == "map-readable":
+                hint["height"] = 2 if int(feature.properties.get("pixel_area", 0)) < 300 else 3
+            elif building_mode == "low-rise":
+                hint["height"] = min(5, max(2, int(feature.properties.get("pixel_area", 0)) // 180 + 2))
+            elif building_mode == "full-experimental":
+                hint["height"] = 10
+                hint["block"] = "stone_bricks"
             if "building" in tags:
                 tags["building:levels"] = str(max(1, int(hint.get("height", 8)) // 3))
         coords = _clip_coordinates(feature.coordinates, bbox)
@@ -95,8 +104,11 @@ def build_synthetic_documents(
         "source_mode": source_mode,
         "bbox": bbox,
         "feature_count": len(features),
+        "render_feature_count": len(world_features),
         "derived_from": "official_naver_static_raster_or_mock_fixture",
         "redistribution": "private_local_output_only",
+        "building_mode": building_mode,
+        "road_width_multiplier": road_width_multiplier,
     }
     return (
         {"version": 0.6, "generator": "arnis-korea-naver-only", "elements": osm_elements},
@@ -123,8 +135,9 @@ def write_synthetic_layer(
     bbox: dict[str, float],
     source_mode: str,
     building_mode: str,
+    road_width_multiplier: float = 1.0,
 ) -> dict[str, str]:
-    osm_doc, world_doc = build_synthetic_documents(features, bbox, source_mode, building_mode)
+    osm_doc, world_doc = build_synthetic_documents(features, bbox, source_mode, building_mode, road_width_multiplier)
     osm_path = output_dir / "naver_synthetic_osm.json"
     world_path = output_dir / "naver_world_features.json"
     osm_path.write_text(json.dumps(osm_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

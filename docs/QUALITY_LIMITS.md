@@ -1,6 +1,8 @@
 # Quality Limits
 
-Static Map raster는 화면 표현용 이미지입니다. 따라서 v0.5 Naver-only 결과는 다음 한계를 report에 기록합니다.
+Static Map raster는 화면 표현용 이미지입니다. v0.6.0의 목표는 정확한 3D 복원이 아니라 도로, 수역, 녹지, 큰 건물 윤곽을 알아볼 수 있는 지도형 월드입니다.
+
+리포트에 기록되는 핵심 한계:
 
 - `height_source=heuristic_from_naver_raster`
 - `exact_height_available=false`
@@ -8,6 +10,14 @@ Static Map raster는 화면 표현용 이미지입니다. 따라서 v0.5 Naver-o
 - `external_dem_used=false`
 - 건물 footprint는 raster segmentation 기반 후보입니다.
 - 도로, 수역, 녹지, 철도는 색상 profile과 connected component 기반 추정입니다.
-- label/icon noise는 작은 object 제거와 confidence score로 완화합니다.
+- Static Map label/icon noise는 필터링하지만 완전히 제거된다고 보장하지 않습니다.
 
-작은 bbox부터 테스트하는 것을 권장합니다. 큰 bbox는 Static Map 요청 수와 raster segmentation 시간이 증가합니다.
+품질 튜닝:
+
+- `--noise-filter-level high`: 작은 label/icon/noise 후보를 강하게 제거
+- `--building-min-area`: 작은 건물 조각 제거 기준 상향
+- `--road-width-multiplier`: 도로 가독성 확대
+- `--building-mode`: 기본은 `map-readable`, 입체 건물은 `full-experimental`
+- `--world-scale`: Minecraft world에서 같은 bbox를 더 크게 표현
+
+처음에는 작은 bbox로 테스트하는 것을 권장합니다. 너무 넓은 bbox는 feature가 많아지고, 너무 좁은 bbox는 도로/건물 경계가 뭉개질 수 있습니다.

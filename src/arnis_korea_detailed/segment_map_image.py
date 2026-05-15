@@ -8,6 +8,13 @@ def _distance(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
 
 
 def classify_pixel(pixel: tuple[int, int, int]) -> str:
+    r, g, b = pixel
+    if max(pixel) < 55:
+        return "label_noise"
+    if max(pixel) - min(pixel) < 18 and 55 <= max(pixel) <= 115:
+        return "rail"
+    if r > 200 and g > 200 and b > 200:
+        return "road"
     return min(PALETTE, key=lambda name: _distance(pixel, PALETTE[name]))
 
 

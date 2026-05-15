@@ -10,6 +10,7 @@ PALETTE = {
     "water": (90, 160, 220),
     "green": (110, 175, 105),
     "rail": (80, 80, 80),
+    "label_noise": (25, 25, 25),
 }
 
 
@@ -30,6 +31,8 @@ def generate_mock_pixels(width: int = 96, height: int = 96) -> list[list[tuple[i
                 pixels[y][x] = PALETTE["water"]
             if abs(y - (x // 2 + 18)) <= 1 and 0 <= x < width:
                 pixels[y][x] = PALETTE["rail"]
+            if (x, y) in {(5, 5), (6, 5), (16, 44), (17, 44), (18, 44), (73, 52), (73, 53), (74, 53)}:
+                pixels[y][x] = PALETTE["label_noise"]
 
     return pixels
 

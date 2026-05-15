@@ -1,14 +1,22 @@
 # Naver-only Mode
 
-v0.5.2 Naver-only mode는 공식 Naver Static Map raster를 분석해 synthetic OSM-like local file을 만들고, patched Arnis no-network renderer에 `--file`로 전달합니다.
+v0.6.0 Naver-only mode는 공식 Naver Static Map raster를 분석해 로컬 synthetic feature layer를 만들고, 기본적으로 지도형 Minecraft world writer로 낮고 읽기 쉬운 월드를 생성합니다.
 
 ## Renderer
 
-- 기본 writer: `patched_arnis_no_network_renderer`
-- fallback/debug only: `arnis_korea_minimal_anvil_writer`
+- 기본 writer: `arnis_korea_minimal_anvil_writer` map-readable path
+- 실험 writer: `full-experimental` 또는 `--writer arnis`에서 patched Arnis no-network renderer 사용
 - target Minecraft Java: 1.21.x
-- `--file` 없는 renderer 실행은 실패합니다.
-- Overture, Overpass, elevation external fetch, land-cover external fetch, Nominatim은 Naver-only renderer path에서 비활성화됩니다.
+- renderer network는 Naver-only path에서 비활성화됩니다.
+- Overture, Overpass, elevation external fetch, land-cover external fetch, Nominatim은 Naver-only path에서 비활성화됩니다.
+
+## Building Modes
+
+- `map-readable`: 기본값, 도로/녹지/수역 우선, 건물 1-3블록 footprint/outline 중심
+- `footprint-only`: 건물 바닥 윤곽만
+- `low-rise`: 낮은 건물 2-5블록
+- `roads-green-water-only`: 건물 생성 안 함
+- `full-experimental`: 기존 full building extrusion 실험 옵션
 
 ## Real Naver command
 
@@ -21,27 +29,18 @@ v0.5.2 Naver-only mode는 공식 Naver Static Map raster를 분석해 synthetic 
   --terrain=false `
   --interior=false `
   --roof=true `
-  --building-mode full `
+  --building-mode map-readable `
+  --noise-filter-level high `
+  --road-width-multiplier 1.5 `
   --allow-static-raster-storage `
   --allow-static-raster-analysis `
   --accept-naver-static-raster-terms
-```
-
-Minecraft saves에 복사할 폴더:
-
-```text
-.\output-hufs-naver\world-hufs-naver
-```
-
-복사하지 말 것:
-
-```text
-.\output-hufs-naver\arnis_korea_project
 ```
 
 ## Output
 
 - playable world: `<output_dir>\<world_name>\`
 - project metadata: `<output_dir>\arnis_korea_project\`
+- debug previews: `<output_dir>\arnis_korea_project\debug\`
 
-`world_validation.json`은 metadata 폴더에 저장됩니다.
+`features.normalized.json`에는 class별 count, before/after filter count, dropped noise count가 기록됩니다.
