@@ -1,80 +1,81 @@
-# Arnis Korea v0.7.0 개인 개발판
+# Arnis Korea v0.9.0 Trace Editor MVP
 
-Arnis Korea는 한국 지역을 Minecraft Java world로 만드는 개인 개발용 Windows 앱입니다. GitHub는 private Actions artifact를 로컬 Windows PC로 옮기기 위한 경로이며, 공개 Release 배포용이 아닙니다.
+Arnis Korea는 한국 지역을 Minecraft 월드로 만들기 위한 개인 개발용 Windows GUI입니다. 이 저장소의 GitHub Actions artifact는 개인 Windows PC로 옮기기 위한 산출물이며 공개 배포용 Release가 아닙니다.
 
-v0.7.0은 compatibility-first rebuild입니다. v0.6.0은 map-readable pipeline prototype이었지만 사용자 Windows Minecraft Java에서 load compatibility 문제가 확인되었습니다. v0.7.0부터는 “파일 존재”가 아니라 headless Minecraft server load smoke가 릴리스 게이트입니다.
+v0.9.0의 목표는 월드 생성 품질 개선이 아닙니다. 이번 버전은 **Naver Trace Editor + Arnis Writer** 방향의 첫 MVP이며, 사용자가 네이버 지도 배경 위에 레이어를 직접 만들고 저장/불러오기/내보내기 할 수 있게 하는 데 집중합니다.
 
-## Renderer
+GUI 이름은 `Arnis Korea - 네이버 지도 월드 생성기`입니다.
 
-- 기본 writer: `--writer arnis-no-network`
-- 기본 mode: `--building-mode map-readable`
-- `custom-debug` writer는 릴리스 경로가 아니며 호환성 경고가 붙습니다.
-- Actions는 Minecraft Java `1.21.1` server jar로 생성 월드를 실제 로드합니다.
+## v0.9에서 지원하는 것
 
-## 출력 구조
+- 프로젝트 생성/저장/불러오기
+- 네이버 Static Map API 키 저장, 삭제, 연결 테스트
+- bbox 직접 입력, HUFS 샘플 bbox, 요청 계획 표시
+- Dynamic selector HTML을 bbox 선택 보조 UI로 열기
+- 도로, 건물, 수역, 녹지, 철도, 스폰포인트 레이어 편집
+- suggested layer 보기와 사용자 승인
+- accepted layer만 export 입력으로 사용
+- `accepted_layers.geojson` export
+- `synthetic_osm_preview.json` export
+- source policy report와 trace editor validation report 생성
 
-```text
-output-hufs-v07/
-  world-hufs-naver-v07/
-    level.dat
-    session.lock
-    region/
-  arnis_korea_project/
-    naver_raster/
-    debug/
-    features.normalized.json
-    naver_synthetic_osm.json
-    naver_world_features.json
-    source-policy-report.json
-    arnis-korea-quality-report.md
-    world_validation.json
-    minecraft_load_smoke.json
-    logs/
-```
+## v0.9에서 하지 않는 것
 
-Minecraft saves에 넣는 것은 `output_dir\<world_name>\` 폴더뿐입니다. `arnis_korea_project`는 분석/리포트 폴더이며 saves에 복사하지 않습니다.
+- Minecraft 월드 생성
+- Arnis Writer 연결
+- 자동 후보를 사용자 승인 없이 accepted layer에 넣기
+- 비공식 scraping
+- Naver 내부 지도 데이터 접근
+- 외부 공개 지리 데이터 호출
 
-## 정책
-
-- Naver Static Map 공식 endpoint만 raster 입력으로 사용합니다.
-- Naver-only 실행 경로에서 OSM, Overpass, Overture, AWS Terrain Tiles, ESA WorldCover, Nominatim, 공공/공개 geodata를 호출하지 않습니다.
-- Naver 응답 이미지, cache, 파생 raster, API key, GitHub token은 repo/artifact에 포함하지 않습니다.
-- 네이버 내부 지도 데이터, 내부 tile URL, 브라우저 화면 캡처, 개발자 도구나 트래픽 가로채기 방식은 사용하지 않습니다.
-
-## Real Naver Command
-
-```powershell
-.\arnis-korea-cli.exe generate `
-  --source naver-only `
-  --bbox "37.5955,127.0555,37.5985,127.0620" `
-  --output-dir ".\output-hufs-v07" `
-  --world-name "world-hufs-naver-v07" `
-  --building-mode map-readable `
-  --terrain=false `
-  --interior=false `
-  --roof=true `
-  --writer arnis-no-network `
-  --allow-static-raster-storage `
-  --allow-static-raster-analysis `
-  --accept-naver-static-raster-terms
-```
-
-복사할 폴더:
+월드 생성 연결은 v1.1 목표입니다. GUI에도 다음 문구를 명확히 표시합니다.
 
 ```text
-.\output-hufs-v07\world-hufs-naver-v07
+v0.9에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.
 ```
 
-복사하지 말 것:
+## 프로젝트 구조
 
 ```text
-.\output-hufs-v07\arnis_korea_project
+project_dir/
+  project.arniskorea.json
+  naver_raster/
+  suggested_layers.geojson
+  accepted_layers.geojson
+  synthetic_osm_preview.json
+  reports/
+  previews/
 ```
 
-## Mock Load Smoke
+`project.arniskorea.json`에는 schema version, project name, bbox, spawn point, Static Map 요청 계획, raster 파일 목록, layer 경로, 생성/수정 시각, source policy가 들어갑니다.
 
-```powershell
-.\arnis-korea-cli.exe generate --source mock-naver --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir ".\smoke-output" --world-name "world-load-smoke" --building-mode map-readable --terrain=false --interior=false --roof=true --writer arnis-no-network
+## Source Policy
+
+- 공식 Naver Static Map API를 배경 raster 입력으로 사용할 수 있습니다.
+- Dynamic Map은 bbox 선택용 외부 HTML 보조 UI로만 사용합니다.
+- Geocoding/Reverse Geocoding은 선택적 주소 검색 보조로만 다룹니다.
+- 사용자 수동 trace와 사용자가 승인한 suggested feature만 accepted layer가 됩니다.
+- Naver key, GitHub token, 저장된 raster, cache, debug output, world output은 artifact에 포함하지 않습니다.
+
+## Windows Artifact
+
+Actions artifact 이름:
+
+```text
+arnis-korea-0.9.0-windows_x86_64
 ```
 
-Actions에서는 여기에 `--validate-minecraft-load --target-minecraft-version 1.21.1`을 추가해 실제 load smoke를 수행합니다.
+artifact root:
+
+```text
+arnis-korea.exe
+README.md
+WINDOWS_QUICKSTART.md
+NAVER_CLOUD_MAPS_KEY_GUIDE.md
+docs/
+examples/
+open-gui.bat
+dev-tools/arnis-korea-cli.exe
+```
+
+root에는 `arnis-korea-cli.exe`를 노출하지 않습니다.

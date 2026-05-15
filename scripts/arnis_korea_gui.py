@@ -5,43 +5,45 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
-import subprocess
 import sys
 import threading
 import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
-from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox, ttk
+from tkinter import BooleanVar, Canvas, Listbox, PhotoImage, StringVar, Tk, filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from urllib.error import HTTPError
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
+from arnis_korea_detailed.static_map_request_planner import split_static_map_requests  # noqa: E402
+from arnis_korea_detailed.trace_editor_core import (  # noqa: E402
+    HUFS_BBOX,
+    add_feature,
+    approve_suggested,
+    bbox_center,
+    bbox_to_text,
+    create_project,
+    empty_feature_collection,
+    export_accepted_layers,
+    export_synthetic_osm_preview,
+    extract_suggested_layers,
+    feature,
+    load_project,
+    parse_bbox_text,
+    project_paths,
+    read_json,
+    run_self_test,
+    save_project,
+    validate_project,
+    write_json,
+)
 
 APP_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "ArnisKorea"
 SECRETS_PATH = APP_DIR / "secrets.json"
-DEFAULT_BBOX = "37.5955,127.0555,37.5985,127.0620"
-SEOUL_BBOX = "37.5450,126.9550,37.5750,127.0150"
 STATIC_ENDPOINT = "https://maps.apigw.ntruss.com/map-static/v2/raster"
-
-
-def parse_bbox_text(value: str) -> dict[str, float]:
-    parts = [float(part.strip()) for part in value.split(",")]
-    if len(parts) != 4:
-        raise ValueError("bbox는 min_lat,min_lng,max_lat,max_lng 형식이어야 합니다.")
-    bbox = {"min_lat": parts[0], "min_lng": parts[1], "max_lat": parts[2], "max_lng": parts[3]}
-    if bbox["min_lat"] >= bbox["max_lat"] or bbox["min_lng"] >= bbox["max_lng"]:
-        raise ValueError("bbox 최소값은 최대값보다 작아야 합니다.")
-    return bbox
-
-
-def bbox_center(value: str) -> tuple[float, float]:
-    bbox = parse_bbox_text(value)
-    return ((bbox["min_lat"] + bbox["max_lat"]) / 2, (bbox["min_lng"] + bbox["max_lng"]) / 2)
 
 
 def open_path(path: Path) -> None:
@@ -52,77 +54,69 @@ def open_path(path: Path) -> None:
         webbrowser.open(path.as_uri())
 
 
-class ArnisKoreaApp:
+def safe_json(data: dict[str, object]) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+class TraceEditorApp:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("Arnis Korea")
-        self.root.geometry("1060x760")
-        self.root.minsize(920, 640)
-        self.running = False
+        self.root.title("Arnis Korea - 네이버 지도 월드 생성기")
+        self.root.geometry("1180x780")
+        self.root.minsize(1040, 680)
 
-        self.output_dir = StringVar(value=str(ROOT / "output-hufs-naver"))
-        self.world_name = StringVar(value="world-hufs-naver")
-        self.bbox = StringVar(value=DEFAULT_BBOX)
-        self.spawn_mode = StringVar(value="auto")
-        self.spawn_lat = StringVar(value="")
-        self.spawn_lng = StringVar(value="")
-        self.terrain = BooleanVar(value=False)
-        self.source = StringVar(value="naver-only")
-        self.building_mode = StringVar(value="map-readable")
-        self.writer = StringVar(value="arnis-no-network")
-        self.interior = BooleanVar(value=False)
-        self.roof = BooleanVar(value=True)
-        self.road_width_multiplier = StringVar(value="1.5")
-        self.building_min_area = StringVar(value="")
-        self.noise_filter_level = StringVar(value="high")
-        self.world_scale = StringVar(value="1.5")
-        self.allow_static_storage = BooleanVar(value=False)
-        self.allow_static_analysis = BooleanVar(value=False)
-        self.accept_static_terms = BooleanVar(value=False)
+        self.project_dir = StringVar(value=str(ROOT / "trace-editor-project"))
+        self.project_name = StringVar(value="HUFS Trace Editor")
+        self.bbox = StringVar(value=bbox_to_text(HUFS_BBOX))
+        center = bbox_center(HUFS_BBOX)
+        self.spawn_lat = StringVar(value=f"{center['lat']:.8f}")
+        self.spawn_lng = StringVar(value=f"{center['lng']:.8f}")
         self.client_id = StringVar(value="")
         self.client_secret = StringVar(value="")
-        self.cli_preview = StringVar(value="")
-        self.last_playable_world_dir: Path | None = None
-        self.last_project_dir: Path | None = None
+        self.allow_static_storage = BooleanVar(value=False)
+        self.show_suggested = BooleanVar(value=True)
+        self.layer_visible = {name: BooleanVar(value=True) for name in ["road", "building", "water", "green", "rail", "spawn"]}
+        self.current_layer = StringVar(value="road")
+        self.feature_name = StringVar(value="")
+        self.feature_memo = StringVar(value="")
+        self.canvas_points: list[tuple[float, float]] = []
+        self.background_image: PhotoImage | None = None
 
         self._style()
         self._load_saved_keys()
         self._build()
-        self.update_preview()
+        self.refresh_project_view()
 
     def _style(self) -> None:
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("TFrame", background="#f6f7f9")
-        style.configure("Panel.TFrame", background="#ffffff", relief="solid", borderwidth=1)
         style.configure("TLabel", background="#f6f7f9", foreground="#1f2933", font=("Malgun Gothic", 10))
-        style.configure("Panel.TLabel", background="#ffffff", foreground="#1f2933", font=("Malgun Gothic", 10))
         style.configure("Title.TLabel", background="#f6f7f9", foreground="#111827", font=("Malgun Gothic", 16, "bold"))
         style.configure("TButton", font=("Malgun Gothic", 10), padding=(10, 6))
         style.configure("Primary.TButton", font=("Malgun Gothic", 10, "bold"), padding=(12, 8))
-        style.configure("TNotebook", background="#f6f7f9")
         style.configure("TNotebook.Tab", font=("Malgun Gothic", 10), padding=(14, 7))
 
     def _build(self) -> None:
         outer = ttk.Frame(self.root, padding=16)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Arnis Korea", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(outer, text="Arnis Korea - 네이버 지도 월드 생성기", style="Title.TLabel").pack(anchor="w")
+        self.status = StringVar(value="v0.9에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.")
+        ttk.Label(outer, textvariable=self.status).pack(anchor="w", pady=(4, 10))
+
         notebook = ttk.Notebook(outer)
-        notebook.pack(fill="both", expand=True, pady=(12, 0))
-        self.world_tab = ttk.Frame(notebook, padding=14)
-        self.map_tab = ttk.Frame(notebook, padding=14)
-        self.api_tab = ttk.Frame(notebook, padding=14)
-        self.tools_tab = ttk.Frame(notebook, padding=14)
-        self.help_tab = ttk.Frame(notebook, padding=14)
-        notebook.add(self.world_tab, text="월드 생성")
-        notebook.add(self.map_tab, text="지도/범위")
-        notebook.add(self.api_tab, text="네이버 API")
-        notebook.add(self.tools_tab, text="도구")
-        notebook.add(self.help_tab, text="도움말")
-        self._build_world_tab()
-        self._build_map_tab()
+        notebook.pack(fill="both", expand=True)
+        self.tabs: dict[str, ttk.Frame] = {}
+        for label in ["프로젝트", "네이버 API", "지도 범위", "레이어 편집", "내보내기", "검수/리포트", "도움말"]:
+            frame = ttk.Frame(notebook, padding=12)
+            notebook.add(frame, text=label)
+            self.tabs[label] = frame
+        self._build_project_tab()
         self._build_api_tab()
-        self._build_tools_tab()
+        self._build_bbox_tab()
+        self._build_layer_tab()
+        self._build_export_tab()
+        self._build_report_tab()
         self._build_help_tab()
 
     def _row(self, parent: ttk.Frame, label: str, widget: ttk.Widget, row: int, button: ttk.Widget | None = None) -> None:
@@ -132,126 +126,116 @@ class ArnisKoreaApp:
             button.grid(row=row, column=2, sticky="ew", padx=(8, 0), pady=6)
         parent.columnconfigure(1, weight=1)
 
-    def _build_world_tab(self) -> None:
-        form = ttk.Frame(self.world_tab)
+    def _build_project_tab(self) -> None:
+        tab = self.tabs["프로젝트"]
+        form = ttk.Frame(tab)
         form.pack(fill="x")
-        self._row(form, "출력 폴더", ttk.Entry(form, textvariable=self.output_dir), 0, ttk.Button(form, text="선택", command=self.choose_output))
-        self._row(form, "월드 이름", ttk.Entry(form, textvariable=self.world_name), 1)
-        self._row(form, "bbox", ttk.Entry(form, textvariable=self.bbox), 2)
-        spawn = ttk.Frame(form)
-        for text, value in [("자동", "auto"), ("수동", "manual"), ("Arnis 기본값", "default")]:
-            ttk.Radiobutton(spawn, text=text, variable=self.spawn_mode, value=value, command=self.update_preview).pack(side="left", padx=(0, 14))
-        self._row(form, "스폰포인트", spawn, 3)
-        spawn_values = ttk.Frame(form)
-        ttk.Label(spawn_values, text="lat").pack(side="left")
-        ttk.Entry(spawn_values, textvariable=self.spawn_lat, width=16).pack(side="left", padx=(6, 16))
-        ttk.Label(spawn_values, text="lng").pack(side="left")
-        ttk.Entry(spawn_values, textvariable=self.spawn_lng, width=16).pack(side="left", padx=(6, 0))
-        self._row(form, "수동 좌표", spawn_values, 4)
-        source = ttk.Combobox(form, textvariable=self.source, values=["naver-only", "mock-naver", "naver-assisted", "osm"], state="readonly")
-        self._row(form, "소스", source, 5)
-        mode = ttk.Combobox(form, textvariable=self.building_mode, values=["map-readable", "footprint-only", "low-rise", "full-experimental", "roads-green-water-only"], state="readonly")
-        self._row(form, "건물 생성 모드", mode, 6)
-        writer = ttk.Combobox(form, textvariable=self.writer, values=["arnis-no-network", "custom-debug"], state="readonly")
-        self._row(form, "월드 writer", writer, 7)
-        ttk.Label(form, text="Minecraft 호환성 검증 필요: 기본 writer는 patched Arnis no-network입니다. custom-debug는 릴리스용이 아닙니다.").grid(row=8, column=1, sticky="w", pady=(0, 6))
-        checks = ttk.Frame(form)
-        ttk.Checkbutton(checks, text="Naver terrain estimate experimental", variable=self.terrain, command=self.update_preview).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(checks, text="내부 생성", variable=self.interior, command=self.update_preview).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(checks, text="지붕 생성", variable=self.roof, command=self.update_preview).pack(side="left")
-        self._row(form, "옵션", checks, 9)
-        advanced = ttk.Frame(form)
-        ttk.Label(advanced, text="scale").pack(side="left")
-        ttk.Entry(advanced, textvariable=self.world_scale, width=6).pack(side="left", padx=(4, 12))
-        ttk.Label(advanced, text="road x").pack(side="left")
-        ttk.Entry(advanced, textvariable=self.road_width_multiplier, width=6).pack(side="left", padx=(4, 12))
-        ttk.Label(advanced, text="min area").pack(side="left")
-        ttk.Entry(advanced, textvariable=self.building_min_area, width=8).pack(side="left", padx=(4, 12))
-        ttk.Combobox(advanced, textvariable=self.noise_filter_level, values=["low", "medium", "high"], state="readonly", width=8).pack(side="left")
-        self._row(form, "고급 설정", advanced, 10)
-        consent = ttk.Frame(form)
-        ttk.Checkbutton(consent, text="Static Map 저장 동의", variable=self.allow_static_storage, command=self.update_preview).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(consent, text="Static Map 분석 동의", variable=self.allow_static_analysis, command=self.update_preview).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(consent, text="공식 Static Map 조건 확인", variable=self.accept_static_terms, command=self.update_preview).pack(side="left")
-        self._row(form, "Naver raster", consent, 11)
-        for var in [self.output_dir, self.world_name, self.bbox, self.spawn_lat, self.spawn_lng, self.source, self.building_mode, self.writer, self.road_width_multiplier, self.building_min_area, self.noise_filter_level, self.world_scale]:
-            var.trace_add("write", lambda *_: self.update_preview())
-
-        actions = ttk.Frame(self.world_tab)
-        actions.pack(fill="x", pady=(12, 8))
-        ttk.Button(actions, text="먼저 미리보기 생성", command=self.generate_preview).pack(side="left", padx=(0, 8))
-        self.generate_button = ttk.Button(actions, text="월드 생성", style="Primary.TButton", command=self.generate_world)
-        self.generate_button.pack(side="left")
-        ttk.Button(actions, text="Minecraft saves로 복사", command=self.export_to_minecraft_saves).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="디버그 이미지 열기", command=self.open_debug_dir).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="분석 미리보기 열기", command=self.open_debug_dir).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="품질 리포트 열기", command=self.open_quality_report).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="호환성 리포트 열기", command=self.open_compat_report).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="프로젝트 폴더 열기", command=self.open_project_dir).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="월드 폴더 열기", command=self.open_world_dir).pack(side="left", padx=(8, 0))
-
-        self.log = ScrolledText(self.world_tab, height=18, font=("Consolas", 10), wrap="word")
-        self.log.pack(fill="both", expand=True)
-
-    def _build_map_tab(self) -> None:
-        form = ttk.Frame(self.map_tab)
-        form.pack(fill="x")
-        self._row(form, "bbox", ttk.Entry(form, textvariable=self.bbox), 0)
-        buttons = ttk.Frame(self.map_tab)
-        buttons.pack(fill="x", pady=10)
-        ttk.Button(buttons, text="HUFS 샘플 불러오기", command=lambda: self.set_bbox(DEFAULT_BBOX)).pack(side="left")
-        ttk.Button(buttons, text="서울 샘플 불러오기", command=lambda: self.set_bbox(SEOUL_BBOX)).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="Dynamic Map selector 열기", command=self.open_selector).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="bbox JSON 불러오기", command=self.load_bbox_json).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="요청 수 계산", command=self.plan_static).pack(side="left", padx=(8, 0))
-        self.map_result = ScrolledText(self.map_tab, height=22, font=("Consolas", 10), wrap="word")
-        self.map_result.pack(fill="both", expand=True)
+        self._row(form, "프로젝트 폴더", ttk.Entry(form, textvariable=self.project_dir), 0, ttk.Button(form, text="선택", command=self.choose_project_dir))
+        self._row(form, "프로젝트 이름", ttk.Entry(form, textvariable=self.project_name), 1)
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=10)
+        ttk.Button(actions, text="새 프로젝트", style="Primary.TButton", command=self.create_project_action).pack(side="left")
+        ttk.Button(actions, text="불러오기", command=self.load_project_action).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="프로젝트 폴더 열기", command=lambda: open_path(Path(self.project_dir.get()))).pack(side="left", padx=(8, 0))
+        self.project_text = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
+        self.project_text.pack(fill="both", expand=True)
 
     def _build_api_tab(self) -> None:
-        form = ttk.Frame(self.api_tab)
+        tab = self.tabs["네이버 API"]
+        form = ttk.Frame(tab)
         form.pack(fill="x")
         self._row(form, "Client ID", ttk.Entry(form, textvariable=self.client_id), 0)
         self._row(form, "Client Secret", ttk.Entry(form, textvariable=self.client_secret, show="*"), 1)
-        actions = ttk.Frame(self.api_tab)
+        actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=10)
         ttk.Button(actions, text="저장", command=self.save_keys).pack(side="left")
-        ttk.Button(actions, text="저장된 키 삭제", command=self.delete_keys).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="삭제", command=self.delete_keys).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Static Map API 테스트", command=self.test_static_api).pack(side="left", padx=(8, 0))
-        text = (
-            "Client ID = x-ncp-apigw-api-key-id\n"
-            "Client Secret = x-ncp-apigw-api-key\n"
-            "Ncloud 계정 Access Key/Secret Key가 아니라 Maps Application 인증 정보입니다.\n"
-            "키 원문은 로그에 출력하지 않습니다."
-        )
-        ttk.Label(self.api_tab, text=text, justify="left").pack(anchor="w", pady=(2, 10))
-        self.api_result = ScrolledText(self.api_tab, height=18, font=("Consolas", 10), wrap="word")
+        ttk.Checkbutton(actions, text="저장/분석 동의", variable=self.allow_static_storage).pack(side="left", padx=(12, 0))
+        ttk.Button(actions, text="Static Map 배경 다운로드", command=self.download_static_background).pack(side="left", padx=(8, 0))
+        ttk.Label(tab, text="%APPDATA%\\ArnisKorea\\secrets.json 에 저장합니다. 키 원문은 로그와 프로젝트 폴더에 쓰지 않습니다. 저장/분석 동의가 있을 때만 raster를 프로젝트에 저장합니다.").pack(anchor="w", pady=(0, 8))
+        self.api_result = ScrolledText(tab, height=22, font=("Consolas", 10), wrap="word")
         self.api_result.pack(fill="both", expand=True)
 
-    def _build_tools_tab(self) -> None:
-        actions = ttk.Frame(self.tools_tab)
+    def _build_bbox_tab(self) -> None:
+        tab = self.tabs["지도 범위"]
+        form = ttk.Frame(tab)
+        form.pack(fill="x")
+        self._row(form, "bbox", ttk.Entry(form, textvariable=self.bbox), 0)
+        self._row(form, "스폰 lat", ttk.Entry(form, textvariable=self.spawn_lat), 1)
+        self._row(form, "스폰 lng", ttk.Entry(form, textvariable=self.spawn_lng), 2)
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=10)
+        ttk.Button(actions, text="HUFS 샘플 bbox", command=self.set_hufs_bbox).pack(side="left")
+        ttk.Button(actions, text="bbox 중심 자동", command=self.set_spawn_center).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="요청 계획 표시", command=self.show_request_plan).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Dynamic selector 열기", command=self.open_selector).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="selector 결과 JSON import", command=self.import_selector_json).pack(side="left", padx=(8, 0))
+        self.map_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
+        self.map_result.pack(fill="both", expand=True)
+
+    def _build_layer_tab(self) -> None:
+        tab = self.tabs["레이어 편집"]
+        left = ttk.Frame(tab)
+        left.pack(side="left", fill="y", padx=(0, 12))
+        ttk.Label(left, text="레이어").pack(anchor="w")
+        ttk.Combobox(left, textvariable=self.current_layer, values=["road", "building", "water", "green", "rail", "spawn"], state="readonly", width=18).pack(fill="x", pady=(4, 8))
+        ttk.Entry(left, textvariable=self.feature_name).pack(fill="x", pady=4)
+        ttk.Entry(left, textvariable=self.feature_memo).pack(fill="x", pady=4)
+        ttk.Button(left, text="점 초기화", command=self.clear_canvas_points).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="feature 저장", command=self.save_canvas_feature).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="선택 feature 삭제", command=self.delete_selected_accepted).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="mock 후보 생성", command=self.generate_mock_suggested).pack(fill="x", pady=(12, 0))
+        ttk.Button(left, text="suggested 승인", command=self.approve_selected_suggested).pack(fill="x", pady=(6, 0))
+        ttk.Checkbutton(left, text="suggested 보기", variable=self.show_suggested, command=self.draw_canvas).pack(anchor="w", pady=(12, 0))
+        for name, var in self.layer_visible.items():
+            ttk.Checkbutton(left, text=name, variable=var, command=self.draw_canvas).pack(anchor="w")
+        ttk.Label(left, text="Accepted").pack(anchor="w", pady=(12, 2))
+        self.accepted_list = Listbox(left, width=34, height=8)
+        self.accepted_list.pack(fill="x")
+        ttk.Label(left, text="Suggested").pack(anchor="w", pady=(12, 2))
+        self.suggested_list = Listbox(left, width=34, height=8)
+        self.suggested_list.pack(fill="x")
+
+        right = ttk.Frame(tab)
+        right.pack(side="left", fill="both", expand=True)
+        self.canvas = Canvas(right, background="#f7f3e8", highlightthickness=1, highlightbackground="#d1d5db")
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Button-1>", self.add_canvas_point)
+        ttk.Label(right, text="배경은 mock 또는 저장 동의한 Static Map raster만 표시합니다. 클릭으로 점을 추가한 뒤 feature 저장을 누르세요.").pack(anchor="w", pady=(6, 0))
+
+    def _build_export_tab(self) -> None:
+        tab = self.tabs["내보내기"]
+        ttk.Label(tab, text="v0.9에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.").pack(anchor="w")
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=10)
+        ttk.Button(actions, text="accepted_layers.geojson export", command=self.export_accepted).pack(side="left")
+        ttk.Button(actions, text="synthetic_osm_preview.json export", command=self.export_synthetic).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="source-policy-report.json 생성", command=self.write_source_policy).pack(side="left", padx=(8, 0))
+        self.export_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
+        self.export_result.pack(fill="both", expand=True)
+
+    def _build_report_tab(self) -> None:
+        tab = self.tabs["검수/리포트"]
+        actions = ttk.Frame(tab)
         actions.pack(fill="x")
-        ttk.Button(actions, text="Plan Static Map 실행", command=self.plan_static).pack(side="left")
-        ttk.Button(actions, text="Mock Naver-only 생성", command=self.mock_vectorize).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="출력 폴더 열기", command=lambda: open_path(Path(self.output_dir.get()))).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="로그 저장", command=self.save_log).pack(side="left", padx=(8, 0))
-        ttk.Label(self.tools_tab, text="CLI 명령 미리보기").pack(anchor="w", pady=(14, 4))
-        ttk.Entry(self.tools_tab, textvariable=self.cli_preview).pack(fill="x")
+        ttk.Button(actions, text="검수 실행", style="Primary.TButton", command=self.validate_action).pack(side="left")
+        ttk.Button(actions, text="reports 폴더 열기", command=lambda: open_path(project_paths(Path(self.project_dir.get()))["reports"])).pack(side="left", padx=(8, 0))
+        self.report_result = ScrolledText(tab, height=26, font=("Consolas", 10), wrap="word")
+        self.report_result.pack(fill="both", expand=True, pady=(10, 0))
 
     def _build_help_tab(self) -> None:
         text = (
             "사용 순서\n"
-            "1. 지도/범위 탭에서 bbox를 정합니다.\n"
-            "2. 월드 생성 탭에서 출력 폴더와 스폰포인트, 건물 옵션을 선택합니다.\n"
-            "3. 월드 생성을 누릅니다.\n"
-            "4. Minecraft saves로 복사를 누르면 playable world 폴더만 복사됩니다.\n\n"
-            "Minecraft Java saves 폴더\n"
-            "%APPDATA%\\.minecraft\\saves\n\n"
-            "수동 복사 시 output 안의 playable world 폴더만 saves에 복사합니다. arnis_korea_project 폴더는 개발/분석 자료입니다.\n\n"
-            "네이버 API 키\n"
-            "Naver Cloud Platform Console의 Maps Application에서 Static Map과 Dynamic Map을 켠 뒤 Client ID/Client Secret을 앱에 저장합니다.\n\n"
-            "더블클릭 앱은 일반 사용자용 GUI이고, arnis-korea-cli.exe는 고급 사용자와 문제 진단용입니다."
+            "1. 프로젝트 탭에서 새 프로젝트를 만듭니다.\n"
+            "2. 지도 범위 탭에서 bbox와 스폰포인트를 확인합니다.\n"
+            "3. 네이버 API 탭에서 공식 Static Map API 키를 저장하고 테스트합니다.\n"
+            "4. 레이어 편집 탭에서 도로/건물/수역/녹지/철도/스폰포인트를 직접 그립니다.\n"
+            "5. suggested 후보는 승인 버튼을 눌러야 accepted layer로 들어갑니다.\n"
+            "6. 내보내기 탭에서 accepted_layers.geojson과 synthetic_osm_preview.json을 생성합니다.\n\n"
+            "공식 Static Map API와 사용자 수동 trace만 v0.9 입력으로 사용합니다. 월드 생성은 v1.1 목표입니다."
         )
-        ttk.Label(self.help_tab, text=text, justify="left").pack(anchor="nw")
+        ttk.Label(self.tabs["도움말"], text=text, justify="left").pack(anchor="nw")
 
     def _load_saved_keys(self) -> None:
         if not SECRETS_PATH.exists():
@@ -263,45 +247,66 @@ class ArnisKoreaApp:
         except Exception:
             return
 
-    def choose_output(self) -> None:
-        selected = filedialog.askdirectory(initialdir=self.output_dir.get() or str(ROOT))
+    def choose_project_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.project_dir.get() or str(ROOT))
         if selected:
-            self.output_dir.set(selected)
+            self.project_dir.set(selected)
+            self.refresh_project_view()
 
-    def set_bbox(self, value: str) -> None:
-        self.bbox.set(value)
-        self.plan_static()
+    def create_project_action(self) -> None:
+        try:
+            bbox = parse_bbox_text(self.bbox.get())
+            spawn = {"lat": float(self.spawn_lat.get()), "lng": float(self.spawn_lng.get())}
+            project = create_project(Path(self.project_dir.get()), self.project_name.get(), bbox, spawn)
+            self.write_project_text(project)
+            self.refresh_layer_lists()
+            self.draw_canvas()
+        except Exception as exc:
+            messagebox.showerror("프로젝트 생성 실패", str(exc))
 
-    def open_selector(self) -> None:
-        selector = ROOT / "web" / "dynamic_selector.html"
-        webbrowser.open(selector.resolve().as_uri())
+    def load_project_action(self) -> None:
+        try:
+            project = load_project(Path(self.project_dir.get()))
+            self.project_name.set(project.get("project_name", ""))
+            self.bbox.set(bbox_to_text(project["bbox"]))
+            spawn = project.get("spawn_point", {})
+            self.spawn_lat.set(str(spawn.get("lat", "")))
+            self.spawn_lng.set(str(spawn.get("lng", "")))
+            self.write_project_text(project)
+            self.refresh_layer_lists()
+            self.draw_canvas()
+        except Exception as exc:
+            messagebox.showerror("불러오기 실패", str(exc))
 
-    def load_bbox_json(self) -> None:
-        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json"), ("All files", "*.*")])
-        if not path:
-            return
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        bbox = data.get("bbox", data)
-        self.bbox.set(f"{bbox['min_lat']},{bbox['min_lng']},{bbox['max_lat']},{bbox['max_lng']}")
-        self.plan_static()
+    def refresh_project_view(self) -> None:
+        path = project_paths(Path(self.project_dir.get()))["project"]
+        if path.exists():
+            self.write_project_text(read_json(path))
+        else:
+            self.write_project_text({"project_dir": self.project_dir.get(), "status": "프로젝트 파일이 아직 없습니다."})
+
+    def write_project_text(self, data: dict[str, object]) -> None:
+        self.project_text.delete("1.0", "end")
+        self.project_text.insert("end", safe_json(data))
 
     def save_keys(self) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
-        SECRETS_PATH.write_text(json.dumps({"client_id": self.client_id.get().strip(), "client_secret": self.client_secret.get().strip()}, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._write_api_result({"saved": True, "path": str(SECRETS_PATH), "client_id_present": bool(self.client_id.get().strip()), "client_secret_present": bool(self.client_secret.get().strip())})
+        write_json(SECRETS_PATH, {"client_id": self.client_id.get().strip(), "client_secret": self.client_secret.get().strip()})
+        self.write_api({"saved": True, "path": str(SECRETS_PATH), "client_id_present": bool(self.client_id.get().strip()), "client_secret_present": bool(self.client_secret.get().strip())})
 
     def delete_keys(self) -> None:
         if SECRETS_PATH.exists():
             SECRETS_PATH.unlink()
         self.client_id.set("")
         self.client_secret.set("")
-        self._write_api_result({"deleted": True, "path": str(SECRETS_PATH)})
+        self.write_api({"deleted": True, "path": str(SECRETS_PATH)})
 
     def test_static_api(self) -> None:
         def worker() -> None:
             try:
-                plan = split_static_map_requests(parse_bbox_text(self.bbox.get()), level=16, width=640, height=640, scale=1, maptype="basic", fmt="png", dataversion=None)
-                url = f"{STATIC_ENDPOINT}?{urllib.parse.urlencode(plan['tiles'][0]['params'])}"
+                plan = split_static_map_requests(parse_bbox_text(self.bbox.get()), level=16, width=640, height=640, scale=1, maptype="basic", fmt="png")
+                params = plan["tiles"][0]["params"]
+                url = f"{STATIC_ENDPOINT}?{urllib.parse.urlencode(params)}"
                 headers = {"x-ncp-apigw-api-key-id": self.client_id.get().strip(), "x-ncp-apigw-api-key": self.client_secret.get().strip()}
                 if not headers["x-ncp-apigw-api-key-id"] or not headers["x-ncp-apigw-api-key"]:
                     result = {"executed": False, "reason": "키를 먼저 입력하세요."}
@@ -316,198 +321,282 @@ class ArnisKoreaApp:
                         result = {"executed": True, "status": exc.code, "content_type": exc.headers.get("content-type"), "bytes": len(body), "sha256_prefix": hashlib.sha256(body).hexdigest()[:16]}
             except Exception as exc:
                 result = {"executed": True, "status": "error", "error_type": type(exc).__name__, "message": str(exc)}
-            self.root.after(0, lambda: self._write_api_result(result))
+            self.root.after(0, lambda: self.write_api(result))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def plan_static(self) -> None:
+    def download_static_background(self) -> None:
+        if not self.allow_static_storage.get():
+            messagebox.showwarning("동의 필요", "Static Map raster 저장/분석 동의가 필요합니다.")
+            return
+
+        def worker() -> None:
+            try:
+                project_dir = Path(self.project_dir.get())
+                paths = project_paths(project_dir)
+                if paths["project"].exists():
+                    project = load_project(project_dir)
+                    project["bbox"] = parse_bbox_text(self.bbox.get())
+                    project["spawn_point"] = {"lat": float(self.spawn_lat.get()), "lng": float(self.spawn_lng.get())}
+                    project["naver_static_map_request_plan"] = split_static_map_requests(project["bbox"], level=16, width=1024, height=1024, scale=2, maptype="basic", fmt="png")
+                else:
+                    project = create_project(project_dir, self.project_name.get(), parse_bbox_text(self.bbox.get()), {"lat": float(self.spawn_lat.get()), "lng": float(self.spawn_lng.get())})
+                params = project["naver_static_map_request_plan"]["tiles"][0]["params"]
+                headers = {"x-ncp-apigw-api-key-id": self.client_id.get().strip(), "x-ncp-apigw-api-key": self.client_secret.get().strip()}
+                if not headers["x-ncp-apigw-api-key-id"] or not headers["x-ncp-apigw-api-key"]:
+                    result = {"executed": False, "reason": "키를 먼저 입력하세요."}
+                else:
+                    request = urllib.request.Request(f"{STATIC_ENDPOINT}?{urllib.parse.urlencode(params)}", headers=headers, method="GET")
+                    with urllib.request.urlopen(request, timeout=20) as response:
+                        body = response.read()
+                        raster_dir = project_paths(project_dir)["raster_dir"]
+                        raster_dir.mkdir(parents=True, exist_ok=True)
+                        output = raster_dir / "static-map-000.png"
+                        output.write_bytes(body)
+                        project["raster_files"] = [str(output.relative_to(project_dir))]
+                        save_project(project_dir, project)
+                        result = {"executed": True, "status": response.status, "content_type": response.headers.get("content-type"), "bytes": len(body), "sha256_prefix": hashlib.sha256(body).hexdigest()[:16], "saved_to": str(output)}
+                self.root.after(0, lambda: self.after_static_download(result))
+            except Exception as exc:
+                result = {"executed": True, "status": "error", "error_type": type(exc).__name__, "message": str(exc)}
+                self.root.after(0, lambda: self.after_static_download(result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def after_static_download(self, result: dict[str, object]) -> None:
+        self.write_api(result)
+        path_text = result.get("saved_to")
+        if isinstance(path_text, str):
+            self.load_canvas_background(Path(path_text))
+            self.refresh_project_view()
+
+    def write_api(self, data: dict[str, object]) -> None:
+        self.api_result.delete("1.0", "end")
+        self.api_result.insert("end", safe_json(data))
+
+    def set_hufs_bbox(self) -> None:
+        self.bbox.set(bbox_to_text(HUFS_BBOX))
+        self.set_spawn_center()
+        self.show_request_plan()
+
+    def set_spawn_center(self) -> None:
+        center = bbox_center(parse_bbox_text(self.bbox.get()))
+        self.spawn_lat.set(f"{center['lat']:.8f}")
+        self.spawn_lng.set(f"{center['lng']:.8f}")
+
+    def show_request_plan(self) -> None:
         try:
-            plan = split_static_map_requests(parse_bbox_text(self.bbox.get()), level=16, width=1024, height=1024, scale=2, maptype="basic", fmt="png", dataversion=None)
-            lat_size = abs(plan["bbox"]["max_lat"] - plan["bbox"]["min_lat"])
-            lng_size = abs(plan["bbox"]["max_lng"] - plan["bbox"]["min_lng"])
-            if lat_size > 0.02 or lng_size > 0.02:
-                warning = "범위가 큽니다. 먼저 작은 bbox와 zoom level 16으로 테스트하세요."
-            elif lat_size < 0.001 or lng_size < 0.001:
-                warning = "범위가 너무 좁으면 건물/도로가 뭉개질 수 있습니다. zoom level 16 전후를 권장합니다."
-            else:
-                warning = "범위가 지도형 월드 테스트에 적합합니다. 추천 zoom level: 16."
+            bbox = parse_bbox_text(self.bbox.get())
+            plan = split_static_map_requests(bbox, level=16, width=1024, height=1024, scale=2, maptype="basic", fmt="png")
+            warning = "너무 큰 bbox입니다. 작은 범위부터 편집하세요." if plan["grid"]["request_count"] > 4 else "요청 수가 MVP 편집에 적합합니다."
+            data = {"request_count": plan["grid"]["request_count"], "plan": plan, "warning": warning}
             self.map_result.delete("1.0", "end")
-            self.map_result.insert("end", json.dumps({"tile_count": len(plan["tiles"]), "bbox": plan["bbox"], "warning": warning, "endpoint": plan["endpoint"]}, ensure_ascii=False, indent=2))
+            self.map_result.insert("end", safe_json(data))
+            paths = project_paths(Path(self.project_dir.get()))
+            if paths["project"].exists():
+                project = load_project(Path(self.project_dir.get()))
+                project["bbox"] = bbox
+                project["spawn_point"] = {"lat": float(self.spawn_lat.get()), "lng": float(self.spawn_lng.get())}
+                project["naver_static_map_request_plan"] = plan
+                save_project(Path(self.project_dir.get()), project)
+                self.write_project_text(project)
         except Exception as exc:
             self.map_result.delete("1.0", "end")
             self.map_result.insert("end", str(exc))
 
-    def mock_vectorize(self) -> None:
-        self.run_cli(["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--source", "mock-naver", f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}", "--noise-filter-level", self.noise_filter_level.get(), "--writer", self.writer.get()], verify_world=True)
+    def open_selector(self) -> None:
+        selector = ROOT / "web" / "dynamic_selector.html"
+        webbrowser.open(selector.resolve().as_uri())
 
-    def save_log(self) -> None:
-        path = filedialog.asksaveasfilename(defaultextension=".log", filetypes=[("Log", "*.log"), ("Text", "*.txt")])
-        if path:
-            Path(path).write_text(self.log.get("1.0", "end"), encoding="utf-8")
+    def import_selector_json(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        data = read_json(Path(path))
+        bbox = data.get("bbox", data)
+        self.bbox.set(bbox_to_text(bbox))
+        self.set_spawn_center()
+        self.show_request_plan()
 
-    def cli_base(self) -> list[str]:
-        cli_exe = ROOT / "arnis-korea-cli.exe"
-        if cli_exe.exists():
-            return [str(cli_exe)]
-        return [sys.executable, str(ROOT / "scripts" / "arnis_korea_detailed.py")]
+    def add_canvas_point(self, event: object) -> None:
+        self.canvas_points.append((float(event.x), float(event.y)))  # type: ignore[attr-defined]
+        self.draw_canvas()
 
-    def build_generate_args(self) -> list[str]:
-        args = ["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--source", self.source.get(), f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}", "--world-scale", self.world_scale.get(), "--road-width-multiplier", self.road_width_multiplier.get(), "--noise-filter-level", self.noise_filter_level.get(), "--writer", self.writer.get()]
-        if self.building_min_area.get().strip():
-            args.extend(["--building-min-area", self.building_min_area.get().strip()])
-        if self.terrain.get():
-            args.append("--terrain")
-        if self.source.get() == "naver-only":
-            if self.allow_static_storage.get():
-                args.append("--allow-static-raster-storage")
-            if self.allow_static_analysis.get():
-                args.append("--allow-static-raster-analysis")
-            if self.accept_static_terms.get():
-                args.append("--accept-naver-static-raster-terms")
-        if self.spawn_mode.get() == "auto":
-            lat, lng = bbox_center(self.bbox.get())
-            args.extend([f"--spawn-lat={lat}", f"--spawn-lng={lng}"])
-        elif self.spawn_mode.get() == "manual":
-            if self.spawn_lat.get().strip():
-                args.append(f"--spawn-lat={float(self.spawn_lat.get())}")
-            if self.spawn_lng.get().strip():
-                args.append(f"--spawn-lng={float(self.spawn_lng.get())}")
-        return args
+    def clear_canvas_points(self) -> None:
+        self.canvas_points.clear()
+        self.draw_canvas()
 
-    def generate_preview(self) -> None:
-        self.run_cli(["mock-vectorize", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--noise-filter-level", self.noise_filter_level.get()], verify_world=False)
+    def canvas_to_lng_lat(self, point: tuple[float, float]) -> list[float]:
+        bbox = parse_bbox_text(self.bbox.get())
+        width = max(1, self.canvas.winfo_width())
+        height = max(1, self.canvas.winfo_height())
+        x, y = point
+        lng = bbox["min_lng"] + (x / width) * (bbox["max_lng"] - bbox["min_lng"])
+        lat = bbox["max_lat"] - (y / height) * (bbox["max_lat"] - bbox["min_lat"])
+        return [round(lng, 8), round(lat, 8)]
 
-    def update_preview(self) -> None:
+    def save_canvas_feature(self) -> None:
+        layer = self.current_layer.get()
+        coords = [self.canvas_to_lng_lat(point) for point in self.canvas_points]
+        if layer == "spawn":
+            item = feature("spawn", "Point", [float(self.spawn_lng.get()), float(self.spawn_lat.get())], self.feature_name.get(), self.feature_memo.get())
+        elif layer in {"road", "rail"}:
+            if len(coords) < 2:
+                messagebox.showwarning("점 부족", "polyline은 2개 이상의 점이 필요합니다.")
+                return
+            item = feature(layer, "LineString", coords, self.feature_name.get(), self.feature_memo.get())
+        else:
+            if len(coords) < 3:
+                messagebox.showwarning("점 부족", "polygon은 3개 이상의 점이 필요합니다.")
+                return
+            ring = coords + [coords[0]]
+            item = feature(layer, "Polygon", [ring], self.feature_name.get(), self.feature_memo.get())
+        add_feature(Path(self.project_dir.get()), "accepted", item)
+        export_synthetic_osm_preview(Path(self.project_dir.get()))
+        self.clear_canvas_points()
+        self.refresh_layer_lists()
+
+    def delete_selected_accepted(self) -> None:
+        selection = self.accepted_list.curselection()
+        if not selection:
+            return
+        paths = project_paths(Path(self.project_dir.get()))
+        data = read_json(paths["accepted"])
+        del data["features"][selection[0]]
+        write_json(paths["accepted"], data)
+        export_synthetic_osm_preview(Path(self.project_dir.get()))
+        self.refresh_layer_lists()
+        self.draw_canvas()
+
+    def generate_mock_suggested(self) -> None:
         try:
-            self.cli_preview.set(" ".join(self.cli_base() + self.build_generate_args()))
-        except Exception:
-            self.cli_preview.set("입력값을 확인하세요.")
+            from arnis_korea_detailed.trace_editor_core import write_mock_raster
 
-    def generate_world(self) -> None:
-        if self.running:
-            return
-        if self.source.get() == "naver-only" and not (self.allow_static_storage.get() and self.allow_static_analysis.get() and self.accept_static_terms.get()):
-            messagebox.showwarning("라이선스 확인 필요", "Naver-only 생성에는 Static Map 저장/분석 동의와 공식 조건 확인이 필요합니다.")
-            return
-        if self.source.get() == "naver-only" and (not self.client_id.get().strip() or not self.client_secret.get().strip()):
-            messagebox.showwarning("네이버 API 키 필요", "네이버 API 탭에서 Client ID/Client Secret을 저장하거나 입력하세요.")
-            return
-        try:
-            args = self.build_generate_args()
+            path = write_mock_raster(project_paths(Path(self.project_dir.get()))["previews"] / "mock_background.ppm")
+            self.load_canvas_background(path)
+            suggested = extract_suggested_layers(Path(self.project_dir.get()), path)
+            self.export_result.delete("1.0", "end")
+            self.export_result.insert("end", safe_json({"mock_raster": str(path), "suggested_features": len(suggested["features"])}))
+            self.refresh_layer_lists()
+            self.draw_canvas()
         except Exception as exc:
-            messagebox.showerror("입력 오류", str(exc))
+            messagebox.showerror("후보 생성 실패", str(exc))
+
+    def approve_selected_suggested(self) -> None:
+        selection = list(self.suggested_list.curselection())
+        if not selection:
+            messagebox.showwarning("선택 필요", "승인할 suggested feature를 선택하세요.")
             return
-        self.run_cli(args, verify_world=True)
+        count = approve_suggested(Path(self.project_dir.get()), selection)
+        export_synthetic_osm_preview(Path(self.project_dir.get()))
+        self.refresh_layer_lists()
+        self.draw_canvas()
+        self.status.set(f"{count}개 suggested feature를 accepted layer로 승인했습니다.")
 
-    def run_cli(self, args: list[str], verify_world: bool = False) -> None:
-        def worker() -> None:
-            command = self.cli_base() + args
-            self.running = True
-            self.root.after(0, lambda: self.generate_button.configure(state="disabled"))
-            self.root.after(0, lambda: self.append_log(f"$ {' '.join(command)}\n"))
-            env = os.environ.copy()
-            if self.client_id.get().strip() and self.client_secret.get().strip():
-                env["NAVER_MAPS_CLIENT_ID"] = self.client_id.get().strip()
-                env["NAVER_MAPS_CLIENT_SECRET"] = self.client_secret.get().strip()
-            result = subprocess.run(command, cwd=ROOT, check=False, text=True, encoding="utf-8", errors="replace", capture_output=True, env=env)
-            stdout = result.stdout or ""
-            stderr = result.stderr or ""
-            self._remember_output_paths(stdout)
-            self.root.after(0, lambda: self.append_log(stdout + stderr + f"\nreturncode={result.returncode}\n"))
-            if verify_world:
-                verification = self.verify_world(Path(self.output_dir.get()))
-                self.root.after(0, lambda: self.append_log(json.dumps(verification, ensure_ascii=False, indent=2) + "\n"))
-            self.running = False
-            self.root.after(0, lambda: self.generate_button.configure(state="normal"))
+    def refresh_layer_lists(self) -> None:
+        paths = project_paths(Path(self.project_dir.get()))
+        accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
+        suggested = read_json(paths["suggested"]) if paths["suggested"].exists() else empty_feature_collection()
+        self.accepted_list.delete(0, "end")
+        for idx, item in enumerate(accepted.get("features", [])):
+            props = item.get("properties", {})
+            self.accepted_list.insert("end", f"{idx}: {props.get('layer')} {props.get('name', '')}")
+        self.suggested_list.delete(0, "end")
+        for idx, item in enumerate(suggested.get("features", [])):
+            props = item.get("properties", {})
+            self.suggested_list.insert("end", f"{idx}: {props.get('layer')} confidence={props.get('confidence', '')}")
 
-        threading.Thread(target=worker, daemon=True).start()
+    def draw_canvas(self) -> None:
+        self.canvas.delete("all")
+        width = max(1, self.canvas.winfo_width())
+        height = max(1, self.canvas.winfo_height())
+        if self.background_image is not None:
+            self.canvas.create_image(0, 0, image=self.background_image, anchor="nw")
+        else:
+            self.canvas.create_rectangle(0, 0, width, height, fill="#f7f3e8", outline="")
+            self.canvas.create_text(16, 16, anchor="nw", text="Naver Static Map 배경 또는 mock 배경", fill="#6b7280", font=("Malgun Gothic", 10))
+        paths = project_paths(Path(self.project_dir.get()))
+        if paths["accepted"].exists():
+            self.draw_geojson(read_json(paths["accepted"]), dashed=False)
+        if self.show_suggested.get() and paths["suggested"].exists():
+            self.draw_geojson(read_json(paths["suggested"]), dashed=True)
+        for x, y in self.canvas_points:
+            self.canvas.create_oval(x - 4, y - 4, x + 4, y + 4, fill="#111827", outline="")
 
-    def verify_world(self, path: Path) -> dict[str, object]:
-        world_dir = self.last_playable_world_dir or path / self.world_name.get()
-        return {
-            "world_dir": str(world_dir),
-            "level_dat": (world_dir / "level.dat").exists(),
-            "session_lock": (world_dir / "session.lock").exists(),
-            "region_dir": (world_dir / "region").is_dir(),
-            "mca_file": any((world_dir / "region").glob("*.mca")) if (world_dir / "region").exists() else False,
-        }
-
-    def _remember_output_paths(self, stdout: str) -> None:
+    def load_canvas_background(self, path: Path) -> None:
         try:
-            data = json.loads(stdout)
+            self.background_image = PhotoImage(file=str(path))
+            self.draw_canvas()
         except Exception:
-            return
-        if data.get("playable_world_dir"):
-            self.last_playable_world_dir = Path(data["playable_world_dir"])
-        if data.get("project_metadata_dir"):
-            self.last_project_dir = Path(data["project_metadata_dir"])
+            self.background_image = None
+            self.draw_canvas()
 
-    def open_world_dir(self) -> None:
-        open_path(self.last_playable_world_dir or Path(self.output_dir.get()) / self.world_name.get())
+    def lng_lat_to_canvas(self, coord: list[float]) -> tuple[float, float]:
+        bbox = parse_bbox_text(self.bbox.get())
+        width = max(1, self.canvas.winfo_width())
+        height = max(1, self.canvas.winfo_height())
+        lng, lat = coord
+        x = (lng - bbox["min_lng"]) / (bbox["max_lng"] - bbox["min_lng"]) * width
+        y = (bbox["max_lat"] - lat) / (bbox["max_lat"] - bbox["min_lat"]) * height
+        return x, y
 
-    def open_project_dir(self) -> None:
-        open_path(self.last_project_dir or Path(self.output_dir.get()) / "arnis_korea_project")
+    def draw_geojson(self, data: dict[str, object], dashed: bool) -> None:
+        colors = {"road": "#4b5563", "building": "#9f7aea", "water": "#2563eb", "green": "#16a34a", "rail": "#111827", "spawn": "#dc2626"}
+        for item in data.get("features", []):  # type: ignore[union-attr]
+            props = item.get("properties", {})  # type: ignore[union-attr]
+            layer = props.get("layer", "road")
+            if not self.layer_visible.get(layer, BooleanVar(value=True)).get():
+                continue
+            geometry = item.get("geometry", {})  # type: ignore[union-attr]
+            color = colors.get(layer, "#111827")
+            dash = (4, 3) if dashed else None
+            if geometry.get("type") == "Point":
+                x, y = self.lng_lat_to_canvas(geometry["coordinates"])
+                self.canvas.create_oval(x - 6, y - 6, x + 6, y + 6, fill=color, outline="")
+            elif geometry.get("type") == "LineString":
+                points = [xy for coord in geometry["coordinates"] for xy in self.lng_lat_to_canvas(coord)]
+                if len(points) >= 4:
+                    self.canvas.create_line(*points, fill=color, width=3, dash=dash)
+            elif geometry.get("type") == "Polygon":
+                ring = geometry["coordinates"][0]
+                points = [xy for coord in ring for xy in self.lng_lat_to_canvas(coord)]
+                if len(points) >= 6:
+                    self.canvas.create_polygon(*points, fill=color, stipple="gray25", outline=color, width=2, dash=dash)
 
-    def open_debug_dir(self) -> None:
-        open_path((self.last_project_dir or Path(self.output_dir.get()) / "arnis_korea_project") / "debug")
+    def export_accepted(self) -> None:
+        path = export_accepted_layers(Path(self.project_dir.get()))
+        self.export_result.delete("1.0", "end")
+        self.export_result.insert("end", safe_json({"exported": str(path)}))
 
-    def open_quality_report(self) -> None:
-        path = (self.last_project_dir or Path(self.output_dir.get()) / "arnis_korea_project") / "arnis-korea-quality-report.md"
-        if not path.exists():
-            messagebox.showwarning("리포트 없음", "먼저 월드를 생성하세요.")
-            return
-        if sys.platform.startswith("win"):
-            os.startfile(str(path))  # type: ignore[attr-defined]
-        else:
-            webbrowser.open(path.as_uri())
+    def export_synthetic(self) -> None:
+        data = export_synthetic_osm_preview(Path(self.project_dir.get()))
+        self.export_result.delete("1.0", "end")
+        self.export_result.insert("end", safe_json(data))
 
-    def open_compat_report(self) -> None:
-        path = (self.last_project_dir or Path(self.output_dir.get()) / "arnis_korea_project") / "minecraft_load_smoke.json"
-        if not path.exists():
-            messagebox.showwarning("리포트 없음", "Actions 또는 CLI --validate-minecraft-load 실행 결과가 필요합니다.")
-            return
-        if sys.platform.startswith("win"):
-            os.startfile(str(path))  # type: ignore[attr-defined]
-        else:
-            webbrowser.open(path.as_uri())
+    def write_source_policy(self) -> None:
+        from arnis_korea_detailed.trace_editor_core import source_policy_report
 
-    def export_to_minecraft_saves(self) -> None:
-        world_dir = self.last_playable_world_dir or Path(self.output_dir.get()) / self.world_name.get()
-        if not (world_dir / "level.dat").exists():
-            messagebox.showerror("월드 없음", "먼저 월드를 생성하세요.")
-            return
-        saves = Path(os.environ.get("APPDATA", str(Path.home()))) / ".minecraft" / "saves"
-        saves.mkdir(parents=True, exist_ok=True)
-        destination = saves / world_dir.name
-        if destination.exists():
-            if not messagebox.askyesno("덮어쓰기 확인", f"{destination} 이 이미 있습니다. 덮어쓸까요?"):
-                index = 2
-                base = destination
-                while destination.exists():
-                    destination = base.with_name(f"{base.name}-{index}")
-                    index += 1
-            else:
-                shutil.rmtree(destination)
-        shutil.copytree(world_dir, destination)
-        self.append_log(json.dumps({"minecraft_saves_export": str(destination)}, ensure_ascii=False, indent=2) + "\n")
+        report = source_policy_report(Path(self.project_dir.get()))
+        self.export_result.delete("1.0", "end")
+        self.export_result.insert("end", safe_json(report))
 
-    def append_log(self, text: str) -> None:
-        self.log.insert("end", text)
-        self.log.see("end")
-
-    def _write_api_result(self, data: dict[str, object]) -> None:
-        self.api_result.delete("1.0", "end")
-        self.api_result.insert("end", json.dumps(data, ensure_ascii=False, indent=2))
+    def validate_action(self) -> None:
+        report = validate_project(Path(self.project_dir.get()))
+        self.report_result.delete("1.0", "end")
+        self.report_result.insert("end", safe_json(report))
 
 
 def self_test_gui() -> int:
+    run_self_test(ROOT / "smoke" / "gui")
     root = Tk()
     root.withdraw()
-    app = ArnisKoreaApp(root)
-    app.update_preview()
+    app = TraceEditorApp(root)
+    app.project_dir.set(str(ROOT / "smoke" / "gui-project"))
+    app.create_project_action()
+    app.generate_mock_suggested()
     root.update_idletasks()
     root.destroy()
-    print("GUI_SELF_TEST=PASS")
+    print("KOREAN_GUI_SELF_TEST=PASS")
     return 0
 
 
@@ -518,7 +607,7 @@ def main() -> int:
     if args.self_test_gui:
         return self_test_gui()
     root = Tk()
-    ArnisKoreaApp(root)
+    TraceEditorApp(root)
     root.mainloop()
     return 0
 

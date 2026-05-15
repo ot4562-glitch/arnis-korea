@@ -1,48 +1,32 @@
 # Windows Quickstart
 
-## 1. Artifact 풀기
+## 실행
 
-GitHub Actions artifact `arnis-korea-0.7.0-windows-x86_64` 안의 zip을 원하는 폴더에 풉니다.
+1. GitHub Actions artifact `arnis-korea-0.9.0-windows_x86_64`를 내려받습니다.
+2. zip을 풉니다.
+3. `arnis-korea.exe`를 실행합니다.
 
-## 2. GUI 실행
+일반 사용자는 root의 `arnis-korea.exe`만 사용합니다. 개발 진단용 CLI는 `dev-tools/arnis-korea-cli.exe` 아래에만 있습니다.
 
-`arnis-korea.exe` 또는 `open-gui.bat`을 실행합니다. 기본 선택은 `Naver-only`, `지도형 모드`, `arnis-no-network` writer입니다.
+## 기본 작업 흐름
 
-## 3. Naver-only 생성
+1. `프로젝트` 탭에서 프로젝트 폴더와 이름을 지정하고 `새 프로젝트`를 누릅니다.
+2. `네이버 API` 탭에서 Client ID와 Client Secret을 입력하고 저장합니다.
+3. `지도 범위` 탭에서 bbox를 입력하거나 `HUFS 샘플 bbox`를 누릅니다.
+4. `레이어 편집` 탭에서 레이어를 선택하고 지도 영역을 클릭해 점을 추가합니다.
+5. `feature 저장`을 눌러 accepted layer에 저장합니다.
+6. 자동 후보를 쓸 때는 `mock 후보 생성` 또는 Static Map 분석 후보를 확인한 뒤 `suggested 승인`을 눌러 accepted layer로 옮깁니다.
+7. `내보내기` 탭에서 `accepted_layers.geojson`과 `synthetic_osm_preview.json`을 생성합니다.
+8. `검수/리포트` 탭에서 validation report를 확인합니다.
 
-`네이버 API` 탭에 Maps Application Client ID/Client Secret을 저장합니다. `월드 생성` 탭에서 bbox, output folder, world name을 확인하고 Static Map 저장/분석 동의 후 `월드 생성`을 누릅니다.
+## v0.9 제한
 
-v0.6.0 이하 prototype world는 Minecraft Java에서 열리지 않을 수 있습니다. v0.7.0 artifact는 Actions에서 Minecraft Java `1.21.1` headless load smoke를 통과해야 생성됩니다.
+v0.9는 Trace Editor MVP입니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.
 
-## 4. Minecraft saves로 복사
-
-GUI의 `Minecraft saves로 복사`를 누릅니다. 이 버튼은 playable world folder만 복사합니다.
-
-복사할 폴더:
+## 키 저장 위치
 
 ```text
-output-hufs-v07\world-hufs-naver-v07
+%APPDATA%\ArnisKorea\secrets.json
 ```
 
-복사하지 않을 폴더:
-
-```text
-output-hufs-v07\arnis_korea_project
-```
-
-## 5. CLI Smoke
-
-```powershell
-.\arnis-korea-cli.exe generate ^
-  --source mock-naver ^
-  --bbox "37.5955,127.0555,37.5985,127.0620" ^
-  --output-dir ".\smoke-output" ^
-  --world-name "world-load-smoke" ^
-  --building-mode map-readable ^
-  --terrain=false ^
-  --interior=false ^
-  --roof=true ^
-  --writer arnis-no-network
-```
-
-성공 기준은 `level.dat` 존재가 아니라 Actions의 `minecraft_load_smoke.json`에서 `passed=true`입니다.
+이 파일은 artifact에 포함되지 않습니다. 프로젝트 폴더에도 저장하지 않습니다.

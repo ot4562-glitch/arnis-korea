@@ -1,4 +1,4 @@
-name: Release Arnis Korea Windows
+name: Build Arnis Korea v0.9 Windows Artifact
 
 on:
   workflow_dispatch:
@@ -7,16 +7,15 @@ on:
       - "arnis-korea-v*"
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ARTIFACT_NAME: arnis-korea-0.7.0-windows-x86_64
-  TARGET_MC_VERSION: "1.21.1"
+  ARTIFACT_NAME: arnis-korea-0.9.0-windows_x86_64
+  PYTHONPATH: src
 
 permissions:
   contents: read
 
 jobs:
   build-windows:
-    name: build-windows-x86_64
+    name: trace-editor-windows-x86_64
     runs-on: windows-latest
 
     steps:
@@ -26,128 +25,66 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Ensure upstream Arnis source
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f upstream/arnis/Cargo.toml ]; then
-            mkdir -p upstream
-            git clone --depth 1 https://github.com/louis-e/arnis upstream/arnis
-          fi
-
-      - name: Build patched Arnis no-network renderer
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/patch_arnis_no_network.py
-          cargo build --release --no-default-features --manifest-path upstream/arnis/Cargo.toml --target-dir upstream/arnis/target
-          test -f upstream/arnis/target/release/arnis.exe
-
-      - name: Build GUI and CLI
+      - name: Python compile and GUI build
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip pyinstaller
           python -m compileall scripts src
+          python -m arnis_korea_detailed.trace_editor_core self-test --output-dir smoke
           python scripts\arnis_korea_gui.py --self-test-gui
           pyinstaller --clean --onefile --windowed --name arnis-korea --paths src scripts\arnis_korea_gui.py
-          pyinstaller --clean --onefile --name arnis-korea-cli --paths src --hidden-import urllib --hidden-import urllib.request --hidden-import urllib.parse --hidden-import urllib.error --hidden-import urllib.response --collect-submodules urllib scripts\arnis_korea_detailed.py
+          pyinstaller --clean --onefile --name arnis-korea-cli --paths src src\arnis_korea_detailed\trace_editor_core.py
           if (-not (Test-Path dist\arnis-korea.exe)) { throw "missing GUI exe" }
-          if (-not (Test-Path dist\arnis-korea-cli.exe)) { throw "missing CLI exe" }
+          if (-not (Test-Path dist\arnis-korea-cli.exe)) { throw "missing dev CLI exe" }
 
-      - name: Assemble package
+      - name: Trace editor QA
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force package\bin, package\web, package\examples, package\docs, package\scripts, package\src | Out-Null
+          New-Item -ItemType Directory -Force smoke\qa | Out-Null
+          python -m arnis_korea_detailed.trace_editor_core self-test --output-dir smoke\qa | Tee-Object -FilePath trace-editor-self-test.json
+          $summary = Get-Content trace-editor-self-test.json -Raw | ConvertFrom-Json
+          foreach ($key in @("MOCK_PROJECT_CREATE","MOCK_RASTER_LOAD","SUGGESTED_LAYER_GENERATION","SUGGESTED_TO_ACCEPTED_APPROVAL","ACCEPTED_LAYERS_EXPORT","SYNTHETIC_OSM_PREVIEW_EXPORT","SOURCE_POLICY")) {
+            if ($summary.$key -ne "PASS") { throw "$key failed" }
+          }
+          $project = $summary.project_dir
+          if (-not (Test-Path "$project\project.arniskorea.json")) { throw "project file missing" }
+          if (-not (Test-Path "$project\accepted_layers.geojson")) { throw "accepted layer missing" }
+          if (-not (Test-Path "$project\suggested_layers.geojson")) { throw "suggested layer missing" }
+          if (-not (Test-Path "$project\synthetic_osm_preview.json")) { throw "synthetic preview missing" }
+          if (-not (Test-Path "$project\reports\trace-editor-validation.json")) { throw "validation report missing" }
+          $accepted = Get-Content "$project\accepted_layers.geojson" -Raw | ConvertFrom-Json
+          if ($accepted.features.Count -lt 1) { throw "accepted layer export empty" }
+          foreach ($feature in $accepted.features) {
+            if ($feature.properties.approved_by_user -ne $true) { throw "unapproved accepted feature" }
+          }
+          $synthetic = Get-Content "$project\synthetic_osm_preview.json" -Raw | ConvertFrom-Json
+          if ($synthetic.world_generation -ne "disabled_until_v1.1") { throw "worldgen policy missing" }
+          $policy = Get-Content "$project\reports\source-policy-report.json" -Raw | ConvertFrom-Json
+          if ($policy.passed -ne $true) { throw "source policy failed" }
 
+      - name: Assemble artifact root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force package\dev-tools, package\docs, package\examples | Out-Null
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
-          Copy-Item dist\arnis-korea-cli.exe package\arnis-korea-cli.exe
-
-          Copy-Item upstream\arnis\target\release\arnis.exe package\bin\arnis-korea-renderer.exe
-
+          Copy-Item dist\arnis-korea-cli.exe package\dev-tools\arnis-korea-cli.exe
           Copy-Item README.md package\
           Copy-Item WINDOWS_QUICKSTART.md package\
           Copy-Item NAVER_CLOUD_MAPS_KEY_GUIDE.md package\
-          Copy-Item config.example.yml package\
-          Copy-Item sample_bbox_hufs.json package\
-          Copy-Item LICENSE package\
-          Copy-Item NOTICE package\
-          Copy-Item THIRD_PARTY_LICENSES.md package\
-          Copy-Item web\dynamic_selector.html package\web\
-          Copy-Item examples\mock_raster.ppm package\examples\
-          Copy-Item docs\*.md package\docs\
-          Copy-Item -Recurse src\arnis_korea_detailed package\src\
-          Copy-Item scripts\arnis_korea_detailed.py package\scripts\
-          Copy-Item scripts\arnis_korea_gui.py package\scripts\
-          Copy-Item scripts\minecraft_load_smoke.py package\scripts\
           Copy-Item windows\open-gui.bat package\open-gui.bat
-          Copy-Item windows\run-help.bat package\run-help.bat
-          Copy-Item windows\generate-hufs-naver-mock.bat package\generate-hufs-naver-mock.bat
-          Copy-Item windows\plan-hufs-static.bat package\plan-hufs-static.bat
+          Copy-Item docs\*.md package\docs\
+          Copy-Item sample_bbox_hufs.json package\examples\
+          Copy-Item web\dynamic_selector.html package\examples\dynamic_selector.html
+          if (Test-Path package\arnis-korea-cli.exe) { throw "CLI exe must not be artifact root" }
           Get-ChildItem package -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-
-      - name: Windows smoke
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & .\package\arnis-korea-cli.exe help
-          & .\package\arnis-korea-cli.exe version
-          & .\package\arnis-korea-cli.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
-          New-Item -ItemType Directory -Force smoke | Out-Null
-          & .\package\arnis-korea-cli.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir smoke\outputs
-          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\smoke-output --world-name "world-load-smoke" --source mock-naver --terrain=false --interior=false --roof=true --building-mode map-readable --noise-filter-level high --road-width-multiplier 1.5 --writer arnis-no-network --validate-minecraft-load --target-minecraft-version "$env:TARGET_MC_VERSION" --minecraft-load-timeout 240
-
-          $world = "smoke\smoke-output\world-load-smoke"
-          $project = "smoke\smoke-output\arnis_korea_project"
-          if (-not (Test-Path "$world\level.dat")) { throw "level.dat not found" }
-          if (-not (Test-Path "$world\session.lock")) { throw "session.lock not found" }
-          if (-not (Test-Path "$world\region")) { throw "region folder not found" }
-          $mca = Get-ChildItem "$world\region" -Filter *.mca | Select-Object -First 1
-          if (-not $mca) { throw ".mca file not found" }
-          foreach ($bad in @("naver_raster", "features.normalized.json", "naver_synthetic_osm.json", "naver_world_features.json", "source-policy-report.json", "arnis-korea-quality-report.md")) {
-            if (Test-Path (Join-Path $world $bad)) { throw "forbidden file in world root: $bad" }
-          }
-          if (-not (Test-Path "$project\world_validation.json")) { throw "world_validation.json not found" }
-          if (-not (Test-Path "$project\arnis-korea-quality-report.md")) { throw "quality report not found" }
-          if (-not (Test-Path "$project\minecraft_load_smoke.json")) { throw "minecraft_load_smoke.json not found" }
-          if (-not (Test-Path "$project\quality_auto_check.json")) { throw "quality_auto_check.json not found" }
-          foreach ($preview in @("original_static_map.png", "source_or_mock_raster.png", "segmentation_preview.png", "class_mask_roads.png", "class_mask_buildings.png", "class_mask_green_water.png", "world_overlay_preview.png", "world_topdown_preview.png", "overlay_comparison.png")) {
-            if (-not (Test-Path (Join-Path "$project\debug" $preview))) { throw "debug preview not found: $preview" }
-          }
-          $features = Get-Content "$project\features.normalized.json" -Raw | ConvertFrom-Json
-          if ($features.metadata.filtering.feature_count_after_filter -ge $features.metadata.filtering.feature_count_before_filter) { throw "filter did not reduce features" }
-          if ($features.metadata.filtering.dropped_noise_count -le 0) { throw "noise filter did not drop noise" }
-          $quality = Get-Content "$project\arnis-korea-quality-report.md" -Raw
-          if ($quality -notmatch "map_readability_score") { throw "map_readability_score missing" }
-          $validation = Get-Content "$project\world_validation.json" -Raw | ConvertFrom-Json
-          if ($validation.valid -ne $true) { throw "world validation failed" }
-          $loadSmoke = Get-Content "$project\minecraft_load_smoke.json" -Raw | ConvertFrom-Json
-          if ($loadSmoke.passed -ne $true) { throw "Minecraft load smoke failed" }
-          if ($loadSmoke.done_seen -ne $true) { throw "Minecraft load smoke did not see Done" }
-          if ($loadSmoke.fatal_log_patterns.Count -gt 0) { throw "Minecraft load smoke fatal patterns found" }
-          $qualityAuto = Get-Content "$project\quality_auto_check.json" -Raw | ConvertFrom-Json
-          if ($qualityAuto.passed -ne $true) { throw "quality auto check failed" }
-          if ($qualityAuto.map_readability_score -lt 75) { throw "map readability score below gate" }
-          if (($qualityAuto.road_pixel_or_block_coverage + $qualityAuto.water_pixel_or_block_coverage + $qualityAuto.green_pixel_or_block_coverage) -le 0) { throw "no road/water/green signal in topdown preview" }
-          $policy = Get-Content "$project\source-policy-report.json" -Raw | ConvertFrom-Json
-          if ($policy.external_non_naver_sources_used -ne $false) { throw "source policy failed" }
-          if ($policy.renderer_network_disabled -ne $true) { throw "renderer network policy failed" }
-          if ($policy.synthetic_input_used -ne $true) { throw "synthetic input policy failed" }
-          if ($policy.minecraft_load_smoke_required -ne $true) { throw "minecraft load smoke policy missing" }
-          if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found" }
-          if (Get-ChildItem package -Recurse -Include *.png,*.mca,level.dat,session.lock,*.jar,quality_auto_check.json,minecraft_load_smoke.json -ErrorAction SilentlyContinue) { throw "generated raster/world/debug/server file leaked into package" }
           $gui = Start-Process -FilePath ".\package\arnis-korea.exe" -ArgumentList "--self-test-gui" -Wait -PassThru
-          if ($gui.ExitCode -ne 0) { throw "GUI self-test failed with $($gui.ExitCode)" }
+          if ($gui.ExitCode -ne 0) { throw "packaged GUI self-test failed with $($gui.ExitCode)" }
+          if (Test-Path package\smoke) { Remove-Item package\smoke -Recurse -Force }
 
-      - name: Secret and policy scan
+      - name: Source and artifact policy scans
         shell: bash
         run: |
           set -euo pipefail
@@ -155,10 +92,17 @@ jobs:
           python scripts/release_scan.py package
           p1='g''hp_'
           p2='github''_pat_'
-          p3='/etc/minseong/''secrets'
-          p4='naver_maps_api''_key'
-          if grep -RInE "$p1|$p2|$p3|$p4" --exclude-dir=.git --exclude-dir=smoke --exclude='*.jar' --exclude='release_scan.py' . package; then
-            echo "secret or policy scan failed" >&2
+          p3='naver_maps_api''_key'
+          if grep -RInE "$p1|$p2|$p3" --exclude-dir=.git --exclude-dir=smoke --exclude='*.exe' --exclude='release_scan.py' . package; then
+            echo "secret marker scan failed" >&2
+            exit 1
+          fi
+          if find package -type f \( -name '*.mca' -o -name 'level.dat' -o -name 'session.lock' -o -name '*.jar' -o -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' -o -name '*.ppm' \) | grep .; then
+            echo "generated raster/world/cache file leaked into package" >&2
+            exit 1
+          fi
+          if find package -type d \( -iname 'naver_raster' -o -iname 'cache' -o -iname 'debug' -o -iname 'world' -o -iname 'outputs' \) | grep .; then
+            echo "generated directory leaked into package" >&2
             exit 1
           fi
 
@@ -175,8 +119,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-0.7.0-windows-x86_64
+          name: arnis-korea-0.9.0-windows_x86_64
           path: |
-            arnis-korea-0.7.0-windows-x86_64.zip
+            arnis-korea-0.9.0-windows_x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt
