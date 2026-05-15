@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -68,6 +69,7 @@ try:
         feature,
         iter_geometry_points,
         lng_lat_to_pixel,
+        pixel_to_lng_lat,
         load_project,
         parse_bbox_text,
         project_paths,
@@ -131,6 +133,7 @@ class TraceEditorApp:
         self.selected_feature_index: int | None = None
         self.selected_vertex_index: int | None = None
         self.dragging_vertex = False
+        self.drag_snapshot_taken = False
         self.edit_session = LayerEditSession(Path(self.project_dir.get()))
 
         self._style()
@@ -233,19 +236,34 @@ class TraceEditorApp:
         left.pack(side="left", fill="y", padx=(0, 12))
         ttk.Label(left, text="레이어").pack(anchor="w")
         ttk.Combobox(left, textvariable=self.current_layer, values=["road", "building", "water", "green", "rail", "spawn"], state="readonly", width=18).pack(fill="x", pady=(4, 8))
+        modes = ttk.Frame(left)
+        modes.pack(fill="x", pady=(0, 8))
+        for text, value in [("그리기", "draw"), ("선택", "select"), ("이동", "pan")]:
+            ttk.Radiobutton(modes, text=text, variable=self.edit_mode, value=value).pack(side="left")
         ttk.Entry(left, textvariable=self.feature_name).pack(fill="x", pady=4)
         ttk.Entry(left, textvariable=self.feature_memo).pack(fill="x", pady=4)
+        zoom = ttk.Frame(left)
+        zoom.pack(fill="x", pady=(6, 0))
+        ttk.Button(zoom, text="+", command=lambda: self.zoom_canvas(1.25)).pack(side="left", fill="x", expand=True)
+        ttk.Button(zoom, text="-", command=lambda: self.zoom_canvas(0.8)).pack(side="left", fill="x", expand=True, padx=(4, 0))
+        ttk.Button(zoom, text="Reset", command=self.reset_view).pack(side="left", fill="x", expand=True, padx=(4, 0))
         ttk.Button(left, text="점 초기화", command=self.clear_canvas_points).pack(fill="x", pady=(6, 0))
         ttk.Button(left, text="feature 저장", command=self.save_canvas_feature).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="이름/메모/class 적용", command=self.apply_selected_properties).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="선택 점 삭제", command=self.delete_selected_vertex).pack(fill="x", pady=(6, 0))
         ttk.Button(left, text="선택 feature 삭제", command=self.delete_selected_accepted).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="Undo", command=self.undo_edit).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="Redo", command=self.redo_edit).pack(fill="x", pady=(6, 0))
         ttk.Button(left, text="mock 후보 생성", command=self.generate_mock_suggested).pack(fill="x", pady=(12, 0))
         ttk.Button(left, text="suggested 승인", command=self.approve_selected_suggested).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="accepted를 suggested로", command=self.revert_selected_accepted).pack(fill="x", pady=(6, 0))
         ttk.Checkbutton(left, text="suggested 보기", variable=self.show_suggested, command=self.draw_canvas).pack(anchor="w", pady=(12, 0))
         for name, var in self.layer_visible.items():
             ttk.Checkbutton(left, text=name, variable=var, command=self.draw_canvas).pack(anchor="w")
         ttk.Label(left, text="Accepted").pack(anchor="w", pady=(12, 2))
         self.accepted_list = Listbox(left, width=34, height=8)
         self.accepted_list.pack(fill="x")
+        self.accepted_list.bind("<<ListboxSelect>>", self.on_accepted_select)
         ttk.Label(left, text="Suggested").pack(anchor="w", pady=(12, 2))
         self.suggested_list = Listbox(left, width=34, height=8)
         self.suggested_list.pack(fill="x")
@@ -254,8 +272,13 @@ class TraceEditorApp:
         right.pack(side="left", fill="both", expand=True)
         self.canvas = Canvas(right, background="#f7f3e8", highlightthickness=1, highlightbackground="#d1d5db")
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Button-1>", self.add_canvas_point)
-        ttk.Label(right, text="배경은 mock 또는 저장 동의한 Static Map raster만 표시합니다. 클릭으로 점을 추가한 뒤 feature 저장을 누르세요.").pack(anchor="w", pady=(6, 0))
+        self.canvas.bind("<Button-1>", self.on_canvas_down)
+        self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_up)
+        self.canvas.bind("<MouseWheel>", self.on_mousewheel)
+        self.canvas.bind("<Button-4>", lambda event: self.zoom_canvas(1.1, event.x, event.y))
+        self.canvas.bind("<Button-5>", lambda event: self.zoom_canvas(0.9, event.x, event.y))
+        ttk.Label(right, text="그리기: 점 추가 후 feature 저장. 선택: feature/점을 선택하고 점 이동/삭제. 이동: 배경 pan. 휠: zoom.").pack(anchor="w", pady=(6, 0))
 
     def _build_export_tab(self) -> None:
         tab = self.tabs["내보내기"]
@@ -264,6 +287,7 @@ class TraceEditorApp:
         actions.pack(fill="x", pady=10)
         ttk.Button(actions, text="accepted_layers.geojson export", command=self.export_accepted).pack(side="left")
         ttk.Button(actions, text="synthetic_osm_preview.json export", command=self.export_synthetic).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="layer_validation_report.json 생성", command=self.export_layer_validation).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="source-policy-report.json 생성", command=self.write_source_policy).pack(side="left", padx=(8, 0))
         self.export_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
         self.export_result.pack(fill="both", expand=True)
@@ -305,13 +329,18 @@ class TraceEditorApp:
         selected = filedialog.askdirectory(initialdir=self.project_dir.get() or str(ROOT))
         if selected:
             self.project_dir.set(selected)
+            self.sync_edit_session()
             self.refresh_project_view()
+
+    def sync_edit_session(self) -> None:
+        self.edit_session = LayerEditSession(Path(self.project_dir.get()))
 
     def create_project_action(self) -> None:
         try:
             bbox = parse_bbox_text(self.bbox.get())
             spawn = {"lat": float(self.spawn_lat.get()), "lng": float(self.spawn_lng.get())}
             project = create_project(Path(self.project_dir.get()), self.project_name.get(), bbox, spawn)
+            self.sync_edit_session()
             self.write_project_text(project)
             self.refresh_layer_lists()
             self.draw_canvas()
@@ -321,6 +350,7 @@ class TraceEditorApp:
     def load_project_action(self) -> None:
         try:
             project = load_project(Path(self.project_dir.get()))
+            self.sync_edit_session()
             self.project_name.set(project.get("project_name", ""))
             self.bbox.set(bbox_to_text(project["bbox"]))
             spawn = project.get("spawn_point", {})
@@ -484,8 +514,68 @@ class TraceEditorApp:
         self.set_spawn_center()
         self.show_request_plan()
 
-    def add_canvas_point(self, event: object) -> None:
-        self.canvas_points.append((float(event.x), float(event.y)))  # type: ignore[attr-defined]
+    def on_canvas_down(self, event: object) -> None:
+        x = float(event.x)  # type: ignore[attr-defined]
+        y = float(event.y)  # type: ignore[attr-defined]
+        if self.edit_mode.get() == "pan":
+            self.pan_start = (x, y)
+            return
+        if self.edit_mode.get() == "select":
+            self.select_at_canvas(x, y)
+            if self.selected_feature_index is not None and self.selected_vertex_index is not None:
+                self.dragging_vertex = True
+                self.drag_snapshot_taken = False
+            self.draw_canvas()
+            return
+        coord = self.canvas_to_lng_lat((x, y))
+        if self.current_layer.get() == "spawn":
+            self.canvas_points = [coord]
+        else:
+            self.canvas_points.append(coord)
+        self.draw_canvas()
+
+    def on_canvas_drag(self, event: object) -> None:
+        x = float(event.x)  # type: ignore[attr-defined]
+        y = float(event.y)  # type: ignore[attr-defined]
+        if self.edit_mode.get() == "pan" and self.pan_start is not None:
+            start_x, start_y = self.pan_start
+            self.pan_x += x - start_x
+            self.pan_y += y - start_y
+            self.pan_start = (x, y)
+            self.draw_canvas()
+            return
+        if self.dragging_vertex and self.selected_feature_index is not None and self.selected_vertex_index is not None:
+            if not self.drag_snapshot_taken:
+                self.edit_session.snapshot()
+                self.drag_snapshot_taken = True
+            data = self.edit_session.read()
+            if self.set_feature_vertex(data, self.selected_feature_index, self.selected_vertex_index, self.canvas_to_lng_lat((x, y))):
+                self.edit_session.write(data)
+                self.refresh_layer_lists(preserve_selection=True)
+                self.draw_canvas()
+
+    def on_canvas_up(self, _event: object) -> None:
+        self.pan_start = None
+        self.dragging_vertex = False
+        self.drag_snapshot_taken = False
+
+    def on_mousewheel(self, event: object) -> None:
+        delta = int(event.delta)  # type: ignore[attr-defined]
+        factor = 1.1 if delta > 0 else 0.9
+        self.zoom_canvas(factor, float(event.x), float(event.y))  # type: ignore[attr-defined]
+
+    def zoom_canvas(self, factor: float, center_x: float | None = None, center_y: float | None = None) -> None:
+        old = self.zoom_scale
+        self.zoom_scale = max(0.3, min(8.0, self.zoom_scale * factor))
+        if center_x is not None and center_y is not None and old > 0:
+            self.pan_x = center_x - (center_x - self.pan_x) * (self.zoom_scale / old)
+            self.pan_y = center_y - (center_y - self.pan_y) * (self.zoom_scale / old)
+        self.draw_canvas()
+
+    def reset_view(self) -> None:
+        self.zoom_scale = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
         self.draw_canvas()
 
     def clear_canvas_points(self) -> None:
@@ -497,15 +587,16 @@ class TraceEditorApp:
         width = max(1, self.canvas.winfo_width())
         height = max(1, self.canvas.winfo_height())
         x, y = point
-        lng = bbox["min_lng"] + (x / width) * (bbox["max_lng"] - bbox["min_lng"])
-        lat = bbox["max_lat"] - (y / height) * (bbox["max_lat"] - bbox["min_lat"])
-        return [round(lng, 8), round(lat, 8)]
+        base_x = (x - self.pan_x) / self.zoom_scale
+        base_y = (y - self.pan_y) / self.zoom_scale
+        return pixel_to_lng_lat(base_x, base_y, width, height, bbox)
 
     def save_canvas_feature(self) -> None:
         layer = self.current_layer.get()
-        coords = [self.canvas_to_lng_lat(point) for point in self.canvas_points]
+        coords = list(self.canvas_points)
         if layer == "spawn":
-            item = feature("spawn", "Point", [float(self.spawn_lng.get()), float(self.spawn_lat.get())], self.feature_name.get(), self.feature_memo.get())
+            point = coords[0] if coords else [float(self.spawn_lng.get()), float(self.spawn_lat.get())]
+            item = feature("spawn", "Point", point, self.feature_name.get(), self.feature_memo.get())
         elif layer in {"road", "rail"}:
             if len(coords) < 2:
                 messagebox.showwarning("점 부족", "polyline은 2개 이상의 점이 필요합니다.")
@@ -517,8 +608,7 @@ class TraceEditorApp:
                 return
             ring = coords + [coords[0]]
             item = feature(layer, "Polygon", [ring], self.feature_name.get(), self.feature_memo.get())
-        add_feature(Path(self.project_dir.get()), "accepted", item)
-        export_synthetic_osm_preview(Path(self.project_dir.get()))
+        self.edit_session.add(item)
         self.clear_canvas_points()
         self.refresh_layer_lists()
 
@@ -526,11 +616,9 @@ class TraceEditorApp:
         selection = self.accepted_list.curselection()
         if not selection:
             return
-        paths = project_paths(Path(self.project_dir.get()))
-        data = read_json(paths["accepted"])
-        del data["features"][selection[0]]
-        write_json(paths["accepted"], data)
-        export_synthetic_osm_preview(Path(self.project_dir.get()))
+        self.edit_session.delete_feature(selection[0])
+        self.selected_feature_index = None
+        self.selected_vertex_index = None
         self.refresh_layer_lists()
         self.draw_canvas()
 
@@ -559,7 +647,7 @@ class TraceEditorApp:
         self.draw_canvas()
         self.status.set(f"{count}개 suggested feature를 accepted layer로 승인했습니다.")
 
-    def refresh_layer_lists(self) -> None:
+    def refresh_layer_lists(self, preserve_selection: bool = False) -> None:
         paths = project_paths(Path(self.project_dir.get()))
         accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
         suggested = read_json(paths["suggested"]) if paths["suggested"].exists() else empty_feature_collection()
@@ -567,17 +655,74 @@ class TraceEditorApp:
         for idx, item in enumerate(accepted.get("features", [])):
             props = item.get("properties", {})
             self.accepted_list.insert("end", f"{idx}: {props.get('layer')} {props.get('name', '')}")
+        if preserve_selection and self.selected_feature_index is not None and self.selected_feature_index < len(accepted.get("features", [])):
+            self.accepted_list.selection_set(self.selected_feature_index)
         self.suggested_list.delete(0, "end")
         for idx, item in enumerate(suggested.get("features", [])):
             props = item.get("properties", {})
             self.suggested_list.insert("end", f"{idx}: {props.get('layer')} confidence={props.get('confidence', '')}")
+
+    def on_accepted_select(self, _event: object) -> None:
+        selection = self.accepted_list.curselection()
+        if not selection:
+            return
+        self.selected_feature_index = selection[0]
+        self.selected_vertex_index = None
+        data = self.edit_session.read()
+        if self.selected_feature_index < len(data.get("features", [])):
+            props = data["features"][self.selected_feature_index].get("properties", {})
+            self.current_layer.set(props.get("layer", "road"))
+            self.feature_name.set(props.get("name", ""))
+            self.feature_memo.set(props.get("memo", ""))
+        self.draw_canvas()
+
+    def apply_selected_properties(self) -> None:
+        index = self.selected_feature_index
+        if index is None:
+            selection = self.accepted_list.curselection()
+            index = selection[0] if selection else None
+        if index is None:
+            return
+        self.edit_session.update_properties(index, layer=self.current_layer.get(), name=self.feature_name.get(), memo=self.feature_memo.get())
+        self.refresh_layer_lists(preserve_selection=True)
+        self.draw_canvas()
+
+    def delete_selected_vertex(self) -> None:
+        if self.selected_feature_index is None or self.selected_vertex_index is None:
+            return
+        if self.edit_session.delete_vertex(self.selected_feature_index, self.selected_vertex_index):
+            self.selected_vertex_index = None
+            self.refresh_layer_lists(preserve_selection=True)
+            self.draw_canvas()
+
+    def undo_edit(self) -> None:
+        if self.edit_session.undo():
+            self.refresh_layer_lists(preserve_selection=True)
+            self.draw_canvas()
+
+    def redo_edit(self) -> None:
+        if self.edit_session.redo():
+            self.refresh_layer_lists(preserve_selection=True)
+            self.draw_canvas()
+
+    def revert_selected_accepted(self) -> None:
+        selection = list(self.accepted_list.curselection())
+        if not selection:
+            return
+        moved = revert_accepted_to_suggested(Path(self.project_dir.get()), selection)
+        self.sync_edit_session()
+        self.selected_feature_index = None
+        self.selected_vertex_index = None
+        self.refresh_layer_lists()
+        self.draw_canvas()
+        self.status.set(f"{moved}개 accepted feature를 suggested로 되돌렸습니다.")
 
     def draw_canvas(self) -> None:
         self.canvas.delete("all")
         width = max(1, self.canvas.winfo_width())
         height = max(1, self.canvas.winfo_height())
         if self.background_image is not None:
-            self.canvas.create_image(0, 0, image=self.background_image, anchor="nw")
+            self.canvas.create_image(self.pan_x, self.pan_y, image=self.background_image, anchor="nw")
         else:
             self.canvas.create_rectangle(0, 0, width, height, fill="#f7f3e8", outline="")
             self.canvas.create_text(16, 16, anchor="nw", text="Naver Static Map 배경 또는 mock 배경", fill="#6b7280", font=("Malgun Gothic", 10))
@@ -586,7 +731,8 @@ class TraceEditorApp:
             self.draw_geojson(read_json(paths["accepted"]), dashed=False)
         if self.show_suggested.get() and paths["suggested"].exists():
             self.draw_geojson(read_json(paths["suggested"]), dashed=True)
-        for x, y in self.canvas_points:
+        for coord in self.canvas_points:
+            x, y = self.lng_lat_to_canvas(coord)
             self.canvas.create_oval(x - 4, y - 4, x + 4, y + 4, fill="#111827", outline="")
 
     def load_canvas_background(self, path: Path) -> None:
@@ -602,13 +748,66 @@ class TraceEditorApp:
         width = max(1, self.canvas.winfo_width())
         height = max(1, self.canvas.winfo_height())
         lng, lat = coord
-        x = (lng - bbox["min_lng"]) / (bbox["max_lng"] - bbox["min_lng"]) * width
-        y = (bbox["max_lat"] - lat) / (bbox["max_lat"] - bbox["min_lat"]) * height
-        return x, y
+        x, y = lng_lat_to_pixel(lng, lat, width, height, bbox)
+        return x * self.zoom_scale + self.pan_x, y * self.zoom_scale + self.pan_y
+
+    def set_feature_vertex(self, data: dict[str, object], feature_index: int, vertex_index: int, coord: list[float]) -> bool:
+        features = data.get("features", [])  # type: ignore[assignment]
+        if feature_index < 0 or feature_index >= len(features):  # type: ignore[arg-type]
+            return False
+        geometry = features[feature_index].get("geometry", {})  # type: ignore[index,union-attr]
+        if geometry.get("type") == "Point":
+            geometry["coordinates"] = coord
+        elif geometry.get("type") == "LineString":
+            coords = geometry.get("coordinates", [])
+            if vertex_index < 0 or vertex_index >= len(coords):
+                return False
+            coords[vertex_index] = coord
+        elif geometry.get("type") == "Polygon":
+            ring = geometry.get("coordinates", [[]])[0]
+            if vertex_index < 0 or vertex_index >= len(ring):
+                return False
+            ring[vertex_index] = coord
+            if vertex_index == 0:
+                ring[-1] = coord
+            elif vertex_index == len(ring) - 1:
+                ring[0] = coord
+        else:
+            return False
+        features[feature_index].setdefault("properties", {})["updated_at"] = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()  # type: ignore[index,union-attr]
+        return True
+
+    def select_at_canvas(self, x: float, y: float) -> None:
+        data = self.edit_session.read()
+        best: tuple[float, int, int | None] | None = None
+        for feature_index, item in enumerate(data.get("features", [])):
+            geometry = item.get("geometry", {})
+            for vertex_index, coord in enumerate(iter_geometry_points(geometry)):
+                cx, cy = self.lng_lat_to_canvas(coord)
+                distance = ((cx - x) ** 2 + (cy - y) ** 2) ** 0.5
+                if best is None or distance < best[0]:
+                    best = (distance, feature_index, vertex_index)
+        if best is not None and best[0] <= 14:
+            self.selected_feature_index = best[1]
+            self.selected_vertex_index = best[2]
+            self.accepted_list.selection_clear(0, "end")
+            self.accepted_list.selection_set(best[1])
+            self.on_accepted_select(None)
+            self.selected_vertex_index = best[2]
+        elif best is not None and best[0] <= 36:
+            self.selected_feature_index = best[1]
+            self.selected_vertex_index = None
+            self.accepted_list.selection_clear(0, "end")
+            self.accepted_list.selection_set(best[1])
+            self.on_accepted_select(None)
+        else:
+            self.selected_feature_index = None
+            self.selected_vertex_index = None
+            self.accepted_list.selection_clear(0, "end")
 
     def draw_geojson(self, data: dict[str, object], dashed: bool) -> None:
         colors = {"road": "#4b5563", "building": "#9f7aea", "water": "#2563eb", "green": "#16a34a", "rail": "#111827", "spawn": "#dc2626"}
-        for item in data.get("features", []):  # type: ignore[union-attr]
+        for feature_index, item in enumerate(data.get("features", [])):  # type: ignore[union-attr]
             props = item.get("properties", {})  # type: ignore[union-attr]
             layer = props.get("layer", "road")
             if not self.layer_visible.get(layer, BooleanVar(value=True)).get():
@@ -618,16 +817,24 @@ class TraceEditorApp:
             dash = (4, 3) if dashed else None
             if geometry.get("type") == "Point":
                 x, y = self.lng_lat_to_canvas(geometry["coordinates"])
-                self.canvas.create_oval(x - 6, y - 6, x + 6, y + 6, fill=color, outline="")
+                outline = "#f59e0b" if feature_index == self.selected_feature_index else ""
+                self.canvas.create_oval(x - 6, y - 6, x + 6, y + 6, fill=color, outline=outline, width=3)
             elif geometry.get("type") == "LineString":
                 points = [xy for coord in geometry["coordinates"] for xy in self.lng_lat_to_canvas(coord)]
                 if len(points) >= 4:
-                    self.canvas.create_line(*points, fill=color, width=3, dash=dash)
+                    width = 5 if feature_index == self.selected_feature_index else 3
+                    self.canvas.create_line(*points, fill=color, width=width, dash=dash)
             elif geometry.get("type") == "Polygon":
                 ring = geometry["coordinates"][0]
                 points = [xy for coord in ring for xy in self.lng_lat_to_canvas(coord)]
                 if len(points) >= 6:
-                    self.canvas.create_polygon(*points, fill=color, stipple="gray25", outline=color, width=2, dash=dash)
+                    width = 4 if feature_index == self.selected_feature_index else 2
+                    self.canvas.create_polygon(*points, fill=color, stipple="gray25", outline=color, width=width, dash=dash)
+            if not dashed and feature_index == self.selected_feature_index:
+                for vertex_index, coord in enumerate(iter_geometry_points(geometry)):
+                    x, y = self.lng_lat_to_canvas(coord)
+                    fill = "#f59e0b" if vertex_index == self.selected_vertex_index else "#ffffff"
+                    self.canvas.create_rectangle(x - 4, y - 4, x + 4, y + 4, fill=fill, outline="#111827")
 
     def export_accepted(self) -> None:
         path = export_accepted_layers(Path(self.project_dir.get()))
@@ -636,6 +843,11 @@ class TraceEditorApp:
 
     def export_synthetic(self) -> None:
         data = export_synthetic_osm_preview(Path(self.project_dir.get()))
+        self.export_result.delete("1.0", "end")
+        self.export_result.insert("end", safe_json(data))
+
+    def export_layer_validation(self) -> None:
+        data = write_layer_validation_report(Path(self.project_dir.get()))
         self.export_result.delete("1.0", "end")
         self.export_result.insert("end", safe_json(data))
 

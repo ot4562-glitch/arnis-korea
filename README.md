@@ -13,11 +13,15 @@ GUI 이름은 `Arnis Korea - 네이버 지도 월드 생성기`입니다.
 - 네이버 Static Map API 키 저장, 삭제, 연결 테스트
 - bbox 직접 입력, HUFS 샘플 bbox, 요청 계획 표시
 - Dynamic selector HTML을 bbox 선택 보조 UI로 열기
-- 도로, 건물, 수역, 녹지, 철도, 스폰포인트 레이어 편집
+- 도로, 건물, 수역, 녹지, 철도, 스폰포인트 레이어 생성/선택/수정/삭제
+- zoom, pan, 점 이동, 점 삭제, undo/redo
+- feature 이름/메모/class 변경
+- accepted feature를 suggested로 되돌리기
 - suggested layer 보기와 사용자 승인
 - accepted layer만 export 입력으로 사용
 - `accepted_layers.geojson` export
 - `synthetic_osm_preview.json` export
+- `layer_validation_report.json` export
 - source policy report와 trace editor validation report 생성
 
 ## v1.0에서 하지 않는 것

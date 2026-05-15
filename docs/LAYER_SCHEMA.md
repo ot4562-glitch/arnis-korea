@@ -14,6 +14,7 @@ Layer 파일은 GeoJSON FeatureCollection입니다.
 
 ```json
 {
+  "id": "ak-...",
   "layer": "road",
   "name": "",
   "memo": "",
