@@ -1,4 +1,4 @@
-name: Build Arnis Korea v1.0 Windows Artifact
+name: Build Arnis Korea v1.1 Windows Artifact
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - "arnis-korea-v*"
 
 env:
-  ARTIFACT_NAME: arnis-korea-1.0.0-windows_x86_64
+  ARTIFACT_NAME: arnis-korea-1.1.0-windows_x86_64
   PYTHONPATH: src
 
 permissions:
@@ -25,6 +25,22 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build patched Arnis no-network renderer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git clone --depth 1 https://github.com/louis-e/arnis upstream\arnis
+          python scripts\patch_arnis_no_network.py
+          cargo build --release --no-default-features --manifest-path upstream\arnis\Cargo.toml
+          if (-not (Test-Path upstream\arnis\target\release\arnis.exe)) { throw "missing patched Arnis renderer" }
+
       - name: Python compile and GUI build
         shell: pwsh
         run: |
@@ -32,10 +48,11 @@ jobs:
           python -m pip install --upgrade pip pyinstaller
           python -m compileall scripts src
           python -m arnis_korea_detailed.trace_editor_core self-test --output-dir smoke
+          python -m arnis_korea_detailed.trace_worldgen self-test --output-dir smoke
           python scripts\arnis_korea_gui.py --self-test-gui
           python scripts\arnis_korea_gui.py --safe-mode --self-test-gui
-          pyinstaller --clean --onefile --windowed --name arnis-korea --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
-          pyinstaller --clean --onefile --console --name arnis-korea-debug --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
+          pyinstaller --clean --onefile --windowed --name arnis-korea --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.trace_worldgen --hidden-import arnis_korea_detailed.arnis_no_network_renderer --hidden-import arnis_korea_detailed.minecraft_world_validator --hidden-import arnis_korea_detailed.minecraft_load_smoke --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
+          pyinstaller --clean --onefile --console --name arnis-korea-debug --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.trace_worldgen --hidden-import arnis_korea_detailed.arnis_no_network_renderer --hidden-import arnis_korea_detailed.minecraft_world_validator --hidden-import arnis_korea_detailed.minecraft_load_smoke --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
           pyinstaller --clean --onefile --name arnis-korea-cli --paths src src\arnis_korea_detailed\trace_editor_core.py
           if (-not (Test-Path dist\arnis-korea.exe)) { throw "missing GUI exe" }
           if (-not (Test-Path dist\arnis-korea-debug.exe)) { throw "missing debug GUI exe" }
@@ -64,9 +81,31 @@ jobs:
             if ($feature.properties.approved_by_user -ne $true) { throw "unapproved accepted feature" }
           }
           $synthetic = Get-Content "$project\synthetic_osm_preview.json" -Raw | ConvertFrom-Json
-          if ($synthetic.world_generation -ne "disabled_until_v1.1") { throw "worldgen policy missing" }
+          if ($synthetic.world_generation -ne "enabled_in_v1.1_after_accepted_export") { throw "worldgen policy missing" }
           $policy = Get-Content "$project\reports\source-policy-report.json" -Raw | ConvertFrom-Json
           if ($policy.passed -ne $true) { throw "source policy failed" }
+
+      - name: Arnis Writer v1.1 QA
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m arnis_korea_detailed.trace_worldgen self-test --output-dir smoke\worldgen --root . --renderer --load-smoke | Tee-Object -FilePath worldgen-self-test.json
+          $summary = Get-Content worldgen-self-test.json -Raw | ConvertFrom-Json
+          foreach ($key in @("SYNTHETIC_OSM_EXPORT","SYNTHETIC_OSM_SCHEMA","SOURCE_POLICY_V11","ARNIS_NO_NETWORK_WORLDGEN","CLEAN_WORLD_LAYOUT","PAPER_26_1_2_LOAD_SMOKE")) {
+            if ($summary.$key -ne "PASS") { throw "$key failed" }
+          }
+          $project = $summary.project_dir
+          if (-not (Test-Path "$project\synthetic_osm.json")) { throw "synthetic_osm.json missing" }
+          if (-not (Test-Path "$project\reports\synthetic_osm_export_report.json")) { throw "synthetic export report missing" }
+          if (-not (Test-Path "$project\reports\worldgen-report.json")) { throw "worldgen report missing" }
+          if (-not (Test-Path "$project\reports\minecraft-load-smoke.json")) { throw "minecraft load smoke report missing" }
+          $worldgen = Get-Content "$project\reports\worldgen-report.json" -Raw | ConvertFrom-Json
+          if ($worldgen.suggested_layers_used_for_worldgen -ne $false) { throw "suggested layer used for worldgen" }
+          if ($worldgen.renderer_network_disabled -ne $true) { throw "renderer network guard missing" }
+          if ($worldgen.external_non_naver_sources_used -ne $false) { throw "external non-Naver source used" }
+          $smoke = Get-Content "$project\reports\minecraft-load-smoke.json" -Raw | ConvertFrom-Json
+          if ($smoke.passed -ne $true) { throw "Paper load smoke failed" }
+          if ($smoke.target_paper_api_version -ne "26.1.2") { throw "Paper 26.1.2 gate missing" }
 
       - name: Assemble artifact root
         shell: pwsh
@@ -76,6 +115,7 @@ jobs:
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
           Copy-Item dist\arnis-korea-debug.exe package\dev-tools\arnis-korea-debug.exe
           Copy-Item dist\arnis-korea-cli.exe package\dev-tools\arnis-korea-cli.exe
+          Copy-Item upstream\arnis\target\release\arnis.exe package\dev-tools\arnis-korea-renderer.exe
           Copy-Item README.md package\
           Copy-Item WINDOWS_QUICKSTART.md package\
           Copy-Item NAVER_CLOUD_MAPS_KEY_GUIDE.md package\
@@ -146,8 +186,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-1.0.0-windows_x86_64
+          name: arnis-korea-1.1.0-windows_x86_64
           path: |
-            arnis-korea-1.0.0-windows_x86_64.zip
+            arnis-korea-1.1.0-windows_x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt

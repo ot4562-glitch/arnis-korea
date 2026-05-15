@@ -1,36 +1,36 @@
 # Source Policy
 
-Naver-only source policy는 외부 non-Naver 지도 데이터 사용 여부를 report에 명시합니다.
+v1.1 source policy는 `naver_trace_editor_accepted_layers`입니다.
 
-## Allowed
+## 허용
 
-- `maps.apigw.ntruss.com`
-- 공식 Static Map endpoint `/map-static/v2/raster`
-- Dynamic Map은 bbox selector UI 용도
-- Geocoding, Reverse Geocoding, Directions는 공식 Naver Cloud API로 구현할 때만 허용
+- 공식 Naver Static Map API 배경
+- 사용자의 수동 trace
+- 사용자가 명시적으로 승인한 suggested feature
+- accepted layer 기반 synthetic OSM-like JSON
+- patched Arnis no-network writer
 
-## Blocked in Naver-only
+## 차단
 
-- OSM, Overpass
-- Overture
-- AWS Terrain Tiles
-- ESA WorldCover
-- Nominatim
-- public/government geodata
-- Naver internal map/tile endpoint
-- unofficial scraping, browser capture, canvas extraction, traffic tampering
+- 비공식 Naver scraping
+- Naver 내부 tile/vector 추출
+- OSM, Overpass, Overture
+- AWS Terrain Tiles, ESA WorldCover
+- Nominatim 또는 public geodata 호출
+- suggested layer를 사용자 승인 없이 worldgen 입력으로 사용
 
-## Report fields
+## Report
 
-`source-policy-report.json`은 다음 값을 포함합니다.
+`reports/source-policy-report.json`은 다음 핵심 값을 기록합니다.
 
 ```json
 {
-  "source_policy": "naver_only",
+  "source_policy": "naver_trace_editor_accepted_layers",
+  "worldgen_input": "accepted_layers_only",
+  "suggested_layers_used_for_worldgen": false,
   "external_non_naver_sources_used": false,
-  "official_naver_api_only": true,
-  "renderer_no_network": true,
   "renderer_network_disabled": true,
-  "synthetic_input_used": true
+  "synthetic_osm_used": true,
+  "custom_anvil_writer_used": false
 }
 ```

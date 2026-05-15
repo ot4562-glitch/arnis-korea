@@ -1,43 +1,28 @@
-# Arnis Korea v1.0.0 Trace Editor Editing MVP
+# Arnis Korea v1.1.0 Arnis Writer Integration
 
-Arnis Korea는 한국 지역을 Minecraft 월드로 만들기 위한 개인 개발용 Windows GUI입니다. 이 저장소의 GitHub Actions artifact는 개인 Windows PC로 옮기기 위한 산출물이며 공개 배포용 Release가 아닙니다.
-
-v1.0.0의 목표는 월드 생성 품질 개선이 아닙니다. 이번 버전은 **Naver Trace Editor + Arnis Writer** 방향에서 레이어 편집기를 실제로 쓸 수 있게 만드는 Editing MVP입니다.
+Arnis Korea는 한국 지역을 Minecraft Java 월드로 만들기 위한 개인 개발용 Windows GUI입니다. GitHub Actions artifact는 개인 Windows PC로 옮기기 위한 산출물이며 공개 배포용 Release가 아닙니다.
 
 GUI 이름은 `Arnis Korea - 네이버 지도 월드 생성기`입니다.
 
-## v1.0에서 지원하는 것
+## v1.1에서 지원하는 것
 
-- 프로젝트 생성/저장/불러오기
-- GUI bootstrap crash log와 safe mode
-- 네이버 Static Map API 키 저장, 삭제, 연결 테스트
-- bbox 직접 입력, HUFS 샘플 bbox, 요청 계획 표시
-- Dynamic selector HTML을 bbox 선택 보조 UI로 열기
-- 도로, 건물, 수역, 녹지, 철도, 스폰포인트 레이어 생성/선택/수정/삭제
-- zoom, pan, 점 이동, 점 삭제, undo/redo
-- feature 이름/메모/class 변경
-- accepted feature를 suggested로 되돌리기
-- suggested layer 보기와 사용자 승인
-- accepted layer만 export 입력으로 사용
-- `accepted_layers.geojson` export
-- `synthetic_osm_preview.json` export
-- `layer_validation_report.json` export
-- source policy report와 trace editor validation report 생성
+- 한국어 Trace Editor GUI와 crash log, safe mode
+- 네이버 공식 Static Map API 배경 표시와 수동 trace
+- 도로, 건물, 수역, 녹지, 철도, 스폰포인트 생성/수정/삭제
+- zoom, pan, feature 선택, 점 이동/삭제, undo/redo
+- suggested 후보 보기와 사용자 승인
+- accepted layer only export
+- `accepted_layers.geojson` -> `synthetic_osm.json` 변환
+- patched Arnis no-network writer를 통한 `playable_world/<world_name>` 생성
+- Paper 26.1.2 호환 load smoke gate
 
-## v1.0에서 하지 않는 것
+## Source Policy
 
-- Minecraft 월드 생성
-- Arnis Writer 연결
-- 자동 후보를 사용자 승인 없이 accepted layer에 넣기
-- 비공식 scraping
-- Naver 내부 지도 데이터 접근
-- 외부 공개 지리 데이터 호출
-
-월드 생성 연결은 v1.1 목표입니다. GUI에도 다음 문구를 명확히 표시합니다.
-
-```text
-v1.0에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.
-```
+- 월드 생성 입력은 `accepted_layers.geojson`만 사용합니다.
+- `suggested_layers.geojson`은 후보일 뿐이며 사용자가 승인하지 않으면 월드 생성에 들어가지 않습니다.
+- 네이버 공식 API는 개인 개발자가 Naver Cloud에서 발급한 키와 무료 사용량 범위 안에서 직접 사용합니다.
+- Arnis는 writer로만 사용하며 Overpass, Overture, AWS Terrain Tiles, ESA WorldCover, Nominatim 호출은 차단합니다.
+- Naver key, GitHub token, generated raster, cache, debug output, generated world는 artifact에 포함하지 않습니다.
 
 ## 프로젝트 구조
 
@@ -47,27 +32,19 @@ project_dir/
   naver_raster/
   suggested_layers.geojson
   accepted_layers.geojson
-  synthetic_osm_preview.json
+  synthetic_osm.json
   reports/
   previews/
+  playable_world/
+    <world_name>/
 ```
 
-`project.arniskorea.json`에는 schema version, project name, bbox, spawn point, Static Map 요청 계획, raster 파일 목록, layer 경로, 생성/수정 시각, source policy가 들어갑니다.
-
-## Source Policy
-
-- 공식 Naver Static Map API를 배경 raster 입력으로 사용할 수 있습니다.
-- Dynamic Map은 bbox 선택용 외부 HTML 보조 UI로만 사용합니다.
-- Geocoding/Reverse Geocoding은 선택적 주소 검색 보조로만 다룹니다.
-- 사용자 수동 trace와 사용자가 승인한 suggested feature만 accepted layer가 됩니다.
-- Naver key, GitHub token, 저장된 raster, cache, debug output, world output은 artifact에 포함하지 않습니다.
+Minecraft saves로 복사할 것은 `playable_world/<world_name>` 폴더뿐입니다. 프로젝트 파일, reports, naver_raster, previews, layer 파일은 복사하지 않습니다.
 
 ## Windows Artifact
 
-Actions artifact 이름:
-
 ```text
-arnis-korea-1.0.0-windows_x86_64
+arnis-korea-1.1.0-windows_x86_64
 ```
 
 artifact root:
@@ -80,8 +57,14 @@ NAVER_CLOUD_MAPS_KEY_GUIDE.md
 docs/
 examples/
 open-gui.bat
-dev-tools/arnis-korea-cli.exe
+```
+
+개발용 실행 파일은 `dev-tools/` 아래에만 있습니다.
+
+```text
 dev-tools/arnis-korea-debug.exe
+dev-tools/arnis-korea-cli.exe
+dev-tools/arnis-korea-renderer.exe
 ```
 
 root에는 `arnis-korea-cli.exe`를 노출하지 않습니다.

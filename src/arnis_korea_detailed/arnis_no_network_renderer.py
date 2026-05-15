@@ -11,8 +11,12 @@ from typing import Any
 
 def find_renderer(root: Path) -> Path | None:
     candidates = [
+        root / "dev-tools" / "arnis-korea-renderer.exe",
+        root / "dev-tools" / "arnis-korea-renderer",
         root / "bin" / "arnis-korea-renderer.exe",
         root / "bin" / "arnis-korea-renderer",
+        root / "arnis-korea-renderer.exe",
+        root / "arnis-korea-renderer",
         root / "upstream" / "arnis" / "target" / "release" / "arnis",
         root / "upstream" / "arnis" / "target" / "release" / "arnis.exe",
     ]
@@ -60,7 +64,7 @@ def run_patched_arnis_renderer(
         f"--output-dir={output_parent}",
         "--land-cover=false",
     ]
-    terrain_forced_off = bool(terrain)
+    terrain_forced_off = terrain is False
     if interior is not None:
         command.append(f"--interior={str(interior).lower()}")
     if roof is not None:

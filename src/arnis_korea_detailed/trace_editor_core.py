@@ -12,9 +12,9 @@ from typing import Any
 
 from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
 
-SCHEMA_VERSION = "arnis-korea.trace-editor.project.v1.0"
-LAYER_SCHEMA_VERSION = "arnis-korea.trace-layer.v1.0"
-VERSION = "1.0.0"
+SCHEMA_VERSION = "arnis-korea.trace-editor.project.v1.1"
+LAYER_SCHEMA_VERSION = "arnis-korea.trace-layer.v1.1"
+VERSION = "1.1.0"
 HUFS_BBOX = {"min_lat": 37.5955, "min_lng": 127.0555, "max_lat": 37.5985, "max_lng": 127.0620}
 LAYER_KINDS = {"road", "building", "water", "green", "rail", "spawn"}
 ACCEPTED_SOURCE = "user_approved"
@@ -64,6 +64,8 @@ def project_paths(project_dir: Path) -> dict[str, Path]:
         "suggested": project_dir / "suggested_layers.geojson",
         "accepted": project_dir / "accepted_layers.geojson",
         "synthetic": project_dir / "synthetic_osm_preview.json",
+        "synthetic_osm": project_dir / "synthetic_osm.json",
+        "playable_world": project_dir / "playable_world",
         "reports": project_dir / "reports",
         "previews": project_dir / "previews",
     }
@@ -100,7 +102,8 @@ def create_project(project_dir: Path, project_name: str, bbox: dict[str, float],
             "allowed_sources": ["naver_static_map_api", "manual_user_trace", "mock_background_for_tests"],
             "external_non_naver_sources_used": False,
             "dynamic_map_usage": "bbox_selector_only",
-            "world_generation_supported": False,
+            "world_generation_supported": True,
+            "worldgen_input": "accepted_layers_only",
         },
     }
     write_json(paths["project"], project)
@@ -221,7 +224,7 @@ def export_synthetic_osm_preview(project_dir: Path) -> dict[str, Any]:
                 "geometry": item.get("geometry", {}),
             }
         )
-    output = {"schema_version": "arnis-korea.synthetic-osm-preview.v1.0", "world_generation": "disabled_until_v1.1", "elements": elements}
+    output = {"schema_version": "arnis-korea.synthetic-osm-preview.v1.1", "world_generation": "enabled_in_v1.1_after_accepted_export", "elements": elements}
     write_json(paths["synthetic"], output)
     return output
 
@@ -330,14 +333,20 @@ def source_policy_report(project_dir: Path) -> dict[str, Any]:
     bad_accepted = [item for item in accepted.get("features", []) if item.get("properties", {}).get("approved_by_user") is not True]
     project = read_json(paths["project"]) if paths["project"].exists() else {}
     report = {
-        "schema_version": "arnis-korea.source-policy-report.v1.0",
+        "schema_version": "arnis-korea.source-policy-report.v1.1",
         "passed": len(bad_accepted) == 0,
+        "source_policy": "naver_trace_editor_accepted_layers",
+        "worldgen_input": "accepted_layers_only",
+        "suggested_layers_used_for_worldgen": False,
         "external_non_naver_sources_used": False,
+        "renderer_network_disabled": True,
+        "synthetic_osm_used": True,
+        "custom_anvil_writer_used": False,
         "dynamic_map_usage": "bbox_selector_only",
         "accepted_features": len(accepted.get("features", [])),
         "accepted_features_without_user_approval": len(bad_accepted),
-        "world_generation_supported": False,
-        "source_policy": project.get("source_policy", {}),
+        "world_generation_supported": True,
+        "project_source_policy": project.get("source_policy", {}),
     }
     write_json(paths["reports"] / "source-policy-report.json", report)
     return report
@@ -651,7 +660,7 @@ def run_self_test(base_dir: Path) -> dict[str, Any]:
         "ACCEPTED_LAYER_SCHEMA": "PASS" if layer_validation["accepted"]["passed"] else "FAIL",
         "ACCEPTED_LAYERS_EXPORT": "PASS",
         "SYNTHETIC_OSM_PREVIEW_EXPORT": "PASS",
-        "SYNTHETIC_OSM_PREVIEW_SCHEMA": "PASS" if read_json(project_paths(project_dir)["synthetic"]).get("schema_version") == "arnis-korea.synthetic-osm-preview.v1.0" else "FAIL",
+        "SYNTHETIC_OSM_PREVIEW_SCHEMA": "PASS" if read_json(project_paths(project_dir)["synthetic"]).get("schema_version") == "arnis-korea.synthetic-osm-preview.v1.1" else "FAIL",
         "LAYER_VALIDATION_REPORT": "PASS",
         "SOURCE_POLICY": "PASS" if validation["checks"]["source_policy_pass"] else "FAIL",
         "project_dir": str(project_dir),
@@ -698,6 +707,13 @@ def main() -> int:
     approve.add_argument("--index", type=int, action="append")
     export = sub.add_parser("export")
     export.add_argument("--project-dir", required=True)
+    export_osm = sub.add_parser("export-synthetic-osm")
+    export_osm.add_argument("--project-dir", required=True)
+    worldgen = sub.add_parser("generate-world")
+    worldgen.add_argument("--project-dir", required=True)
+    worldgen.add_argument("--root", default=".")
+    worldgen.add_argument("--world-name", required=True)
+    worldgen.add_argument("--load-smoke", action="store_true")
     validate = sub.add_parser("validate")
     validate.add_argument("--project-dir", required=True)
     self_test = sub.add_parser("self-test")
@@ -718,6 +734,14 @@ def main() -> int:
         project_dir = Path(args.project_dir)
         export_accepted_layers(project_dir)
         print(json.dumps(export_synthetic_osm_preview(project_dir), ensure_ascii=False, indent=2))
+    elif args.command == "export-synthetic-osm":
+        from arnis_korea_detailed.trace_worldgen import export_synthetic_osm
+
+        print(json.dumps(export_synthetic_osm(Path(args.project_dir)), ensure_ascii=False, indent=2))
+    elif args.command == "generate-world":
+        from arnis_korea_detailed.trace_worldgen import generate_world_from_project
+
+        print(json.dumps(generate_world_from_project(Path(args.project_dir), Path(args.root), args.world_name, run_load_smoke=args.load_smoke), ensure_ascii=False, indent=2))
     elif args.command == "validate":
         print(json.dumps(validate_project(Path(args.project_dir)), ensure_ascii=False, indent=2))
     elif args.command == "self-test":

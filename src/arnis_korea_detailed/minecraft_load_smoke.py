@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_TARGET_MINECRAFT_VERSION = "1.21.1"
+DEFAULT_TARGET_MINECRAFT_VERSION = "26.1.2"
+DEFAULT_TARGET_PAPER_API_VERSION = "26.1.2"
 VERSION_MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+PAPER_API_BASE = "https://api.papermc.io/v2/projects/paper"
+PAPER_FILL_GRAPHQL = "https://fill.papermc.io/graphql"
 FATAL_PATTERNS = [
     "Exception reading",
     "Failed to load level",
@@ -29,9 +32,22 @@ FATAL_PATTERNS = [
 
 
 def _read_json_url(url: str) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers={"User-Agent": "arnis-korea-minecraft-load-smoke/0.7"})
+    request = urllib.request.Request(url, headers={"User-Agent": "arnis-korea-minecraft-load-smoke/1.1"})
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _read_graphql(query: str) -> dict[str, Any]:
+    request = urllib.request.Request(
+        PAPER_FILL_GRAPHQL,
+        data=json.dumps({"query": query}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "arnis-korea-minecraft-load-smoke/1.1"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("errors"):
+        raise ValueError(f"Paper Fill GraphQL error: {payload['errors'][0].get('message', 'unknown')}")
+    return payload
 
 
 def resolve_server_download(version: str) -> dict[str, str]:
@@ -50,10 +66,66 @@ def download_server_jar(path: Path, version: str) -> dict[str, str]:
     info = resolve_server_download(version)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        request = urllib.request.Request(info["url"], headers={"User-Agent": "arnis-korea-minecraft-load-smoke/0.7"})
+        request = urllib.request.Request(info["url"], headers={"User-Agent": "arnis-korea-minecraft-load-smoke/1.1"})
         with urllib.request.urlopen(request, timeout=120) as response:
             path.write_bytes(response.read())
     return {**info, "path": str(path), "bytes": str(path.stat().st_size)}
+
+
+def resolve_paper_download(version: str) -> dict[str, str]:
+    fill_query = (
+        '{ project(key:"paper") { version(key:"'
+        + version
+        + '") { key builds(first:1, orderBy:{direction: DESC}) { edges { node { number channel downloads { name url size checksums { sha256 } } } } } } } }'
+    )
+    try:
+        payload = _read_graphql(fill_query)
+        version_node = payload.get("data", {}).get("project", {}).get("version")
+        edges = version_node.get("builds", {}).get("edges", []) if version_node else []
+        if edges:
+            node = edges[0]["node"]
+            download = node.get("downloads", [])[0]
+            return {
+                "server_type": "paper",
+                "version": version,
+                "build": str(node.get("number")),
+                "channel": str(node.get("channel", "")),
+                "url": download["url"],
+                "name": download["name"],
+                "sha256": download.get("checksums", {}).get("sha256", ""),
+            }
+    except Exception:
+        if version == DEFAULT_TARGET_PAPER_API_VERSION:
+            raise
+    builds_doc = _read_json_url(f"{PAPER_API_BASE}/versions/{version}/builds")
+    builds = builds_doc.get("builds", [])
+    if not builds:
+        raise ValueError(f"Paper build not found for Minecraft version: {version}")
+    build = builds[-1]
+    build_number = str(build.get("build"))
+    application = build.get("downloads", {}).get("application", {})
+    name = application.get("name")
+    sha256 = application.get("sha256", "")
+    if not build_number or not name:
+        raise ValueError(f"Paper download metadata incomplete for Minecraft version: {version}")
+    return {
+        "server_type": "paper",
+        "version": version,
+        "build": build_number,
+        "url": f"{PAPER_API_BASE}/versions/{version}/builds/{build_number}/downloads/{name}",
+        "name": name,
+        "sha256": sha256,
+    }
+
+
+def download_paper_jar(path: Path, version: str, paper_api_version: str) -> dict[str, str]:
+    info = resolve_paper_download(version)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        request = urllib.request.Request(info["url"], headers={"User-Agent": "arnis-korea-minecraft-load-smoke/1.1"})
+        with urllib.request.urlopen(request, timeout=180) as response:
+            path.write_bytes(response.read())
+    return {**info, "target_paper_api_version": paper_api_version, "path": str(path), "bytes": str(path.stat().st_size)}
 
 
 def _find_free_port() -> int:
@@ -117,6 +189,8 @@ def run_minecraft_load_smoke(
     output_dir: Path,
     server_jar: Path | None = None,
     target_version: str = DEFAULT_TARGET_MINECRAFT_VERSION,
+    paper_api_version: str = DEFAULT_TARGET_PAPER_API_VERSION,
+    server_type: str = "paper",
     timeout_seconds: int = 180,
     java_bin: str = "java",
 ) -> dict[str, Any]:
@@ -127,12 +201,14 @@ def run_minecraft_load_smoke(
     if server_dir.exists():
         shutil.rmtree(server_dir)
     server_dir.mkdir(parents=True, exist_ok=True)
-    jar = server_jar or (output_dir / f"minecraft-server-{target_version}.jar")
+    jar = server_jar or (output_dir / (f"paper-{target_version}.jar" if server_type == "paper" else f"minecraft-server-{target_version}.jar"))
     result: dict[str, Any] = {
         "schema": "arnis-korea.minecraft_load_smoke.v1",
         "world_dir": str(world_dir),
         "server_dir": str(server_dir),
         "target_minecraft_version": target_version,
+        "target_server_type": server_type,
+        "target_paper_api_version": paper_api_version,
         "timeout_seconds": timeout_seconds,
         "executed": True,
         "passed": False,
@@ -140,7 +216,12 @@ def run_minecraft_load_smoke(
     try:
         server_port = _find_free_port()
         result["server_port"] = server_port
-        download = download_server_jar(jar, target_version) if server_jar is None else {"path": str(jar), "version": target_version, "url": "provided"}
+        if server_jar is not None:
+            download = {"path": str(jar), "version": target_version, "url": "provided", "server_type": server_type}
+        elif server_type == "paper":
+            download = download_paper_jar(jar, target_version, paper_api_version)
+        else:
+            download = download_server_jar(jar, target_version)
         result["server_download"] = download
         copied_world = _copy_world(world_dir, server_dir)
         result["copied_world_dir"] = str(copied_world)
@@ -201,7 +282,8 @@ def run_minecraft_load_smoke(
                 "latest_log_tail": log_tail,
                 "fatal_log_patterns": fatal_hits,
                 "crash_reports": crash_reports,
-                "passed": bool(done_seen and not fatal_hits and not crash_reports),
+                "paper_26_1_2_gate": server_type == "paper" and paper_api_version == DEFAULT_TARGET_PAPER_API_VERSION,
+                "passed": bool(done_seen and not fatal_hits and not crash_reports and (server_type != "paper" or paper_api_version == DEFAULT_TARGET_PAPER_API_VERSION)),
             }
         )
     except Exception as exc:

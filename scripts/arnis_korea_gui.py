@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import traceback
@@ -135,6 +136,15 @@ class TraceEditorApp:
         self.dragging_vertex = False
         self.drag_snapshot_taken = False
         self.edit_session = LayerEditSession(Path(self.project_dir.get()))
+        self.world_name = StringVar(value="HUFS Trace World")
+        self.world_output_dir = StringVar(value=str(Path(self.project_dir.get()) / "playable_world"))
+        self.copy_to_saves = BooleanVar(value=False)
+        self.minecraft_saves_dir = StringVar(value=str(Path.home() / "AppData" / "Roaming" / ".minecraft" / "saves"))
+        self.building_height_mode = StringVar(value="low-rise")
+        self.world_terrain = BooleanVar(value=False)
+        self.world_roof = BooleanVar(value=True)
+        self.world_interior = BooleanVar(value=False)
+        self.world_scale = StringVar(value="1.0")
 
         self._style()
         if not self.safe_mode:
@@ -156,13 +166,13 @@ class TraceEditorApp:
         outer = ttk.Frame(self.root, padding=16)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text="Arnis Korea - 네이버 지도 월드 생성기", style="Title.TLabel").pack(anchor="w")
-        self.status = StringVar(value="v1.0에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.")
+        self.status = StringVar(value="v1.1에서는 승인된 accepted layer만 Arnis Writer 월드 생성 입력으로 사용합니다.")
         ttk.Label(outer, textvariable=self.status).pack(anchor="w", pady=(4, 10))
 
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
         self.tabs: dict[str, ttk.Frame] = {}
-        for label in ["프로젝트", "네이버 API", "지도 범위", "레이어 편집", "내보내기", "검수/리포트", "도움말"]:
+        for label in ["프로젝트", "네이버 API", "지도 범위", "레이어 편집", "내보내기", "월드 생성", "검수/리포트", "도움말"]:
             frame = ttk.Frame(notebook, padding=12)
             notebook.add(frame, text=label)
             self.tabs[label] = frame
@@ -171,6 +181,7 @@ class TraceEditorApp:
         self._build_bbox_tab()
         self._build_layer_tab()
         self._build_export_tab()
+        self._build_worldgen_tab()
         self._build_report_tab()
         self._build_help_tab()
 
@@ -282,15 +293,44 @@ class TraceEditorApp:
 
     def _build_export_tab(self) -> None:
         tab = self.tabs["내보내기"]
-        ttk.Label(tab, text="v1.0에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.").pack(anchor="w")
+        ttk.Label(tab, text="accepted_layers.geojson과 synthetic_osm.json은 승인된 accepted layer만 사용합니다. suggested 후보는 월드 생성 입력이 아닙니다.").pack(anchor="w")
         actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=10)
         ttk.Button(actions, text="accepted_layers.geojson export", command=self.export_accepted).pack(side="left")
         ttk.Button(actions, text="synthetic_osm_preview.json export", command=self.export_synthetic).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="synthetic_osm.json export", command=self.export_synthetic_osm_v11).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="layer_validation_report.json 생성", command=self.export_layer_validation).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="source-policy-report.json 생성", command=self.write_source_policy).pack(side="left", padx=(8, 0))
         self.export_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
         self.export_result.pack(fill="both", expand=True)
+
+    def _build_worldgen_tab(self) -> None:
+        tab = self.tabs["월드 생성"]
+        ttk.Label(tab, text="월드 생성은 accepted_layers.geojson만 사용합니다. 승인되지 않은 suggested layer는 절대 포함하지 않습니다.").pack(anchor="w")
+        form = ttk.Frame(tab)
+        form.pack(fill="x", pady=(10, 0))
+        self._row(form, "월드 이름", ttk.Entry(form, textvariable=self.world_name), 0)
+        self._row(form, "출력 폴더", ttk.Entry(form, textvariable=self.world_output_dir), 1, ttk.Button(form, text="선택", command=self.choose_world_output_dir))
+        self._row(form, "Minecraft saves", ttk.Entry(form, textvariable=self.minecraft_saves_dir), 2, ttk.Button(form, text="선택", command=self.choose_saves_dir))
+        options = ttk.Frame(tab)
+        options.pack(fill="x", pady=8)
+        ttk.Label(options, text="건물 높이").pack(side="left")
+        ttk.Combobox(options, textvariable=self.building_height_mode, values=["footprint", "low-rise", "experimental_full"], state="readonly", width=18).pack(side="left", padx=(6, 14))
+        ttk.Checkbutton(options, text="roof", variable=self.world_roof).pack(side="left")
+        ttk.Checkbutton(options, text="interior", variable=self.world_interior).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(options, text="terrain experimental", variable=self.world_terrain).pack(side="left", padx=(8, 0))
+        ttk.Label(options, text="scale").pack(side="left", padx=(14, 4))
+        ttk.Entry(options, textvariable=self.world_scale, width=8).pack(side="left")
+        ttk.Checkbutton(options, text="Minecraft saves로 바로 복사", variable=self.copy_to_saves).pack(side="left", padx=(14, 0))
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=(4, 10))
+        self.worldgen_button = ttk.Button(actions, text="월드 생성", style="Primary.TButton", command=self.generate_world_action)
+        self.worldgen_button.pack(side="left")
+        ttk.Button(actions, text="생성된 월드 폴더 열기", command=self.open_generated_world).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="프로젝트 폴더 열기", command=lambda: open_path(Path(self.project_dir.get()))).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Minecraft saves로 복사", command=self.copy_world_to_saves_action).pack(side="left", padx=(8, 0))
+        self.worldgen_result = ScrolledText(tab, height=22, font=("Consolas", 10), wrap="word")
+        self.worldgen_result.pack(fill="both", expand=True)
 
     def _build_report_tab(self) -> None:
         tab = self.tabs["검수/리포트"]
@@ -309,8 +349,9 @@ class TraceEditorApp:
             "3. 네이버 API 탭에서 공식 Static Map API 키를 저장하고 테스트합니다.\n"
             "4. 레이어 편집 탭에서 도로/건물/수역/녹지/철도/스폰포인트를 직접 그립니다.\n"
             "5. suggested 후보는 승인 버튼을 눌러야 accepted layer로 들어갑니다.\n"
-            "6. 내보내기 탭에서 accepted_layers.geojson과 synthetic_osm_preview.json을 생성합니다.\n\n"
-            f"공식 Static Map API와 사용자 수동 trace만 v1.0 입력으로 사용합니다. 월드 생성은 v1.1 목표입니다.\n\n로그 파일: {LATEST_LOG}"
+            "6. 내보내기 탭에서 accepted_layers.geojson과 synthetic_osm.json을 생성합니다.\n"
+            "7. 월드 생성 탭에서 accepted layer 기반 월드를 생성합니다.\n\n"
+            f"공식 Static Map API와 사용자 수동 trace만 입력으로 사용합니다. 월드 생성은 accepted layer only입니다.\n\n로그 파일: {LATEST_LOG}"
         )
         ttk.Label(self.tabs["도움말"], text=text, justify="left").pack(anchor="nw")
         ttk.Button(self.tabs["도움말"], text="로그 보기", command=self.open_latest_log).pack(anchor="w", pady=(12, 0))
@@ -332,8 +373,19 @@ class TraceEditorApp:
             self.sync_edit_session()
             self.refresh_project_view()
 
+    def choose_world_output_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.world_output_dir.get() or self.project_dir.get() or str(ROOT))
+        if selected:
+            self.world_output_dir.set(selected)
+
+    def choose_saves_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.minecraft_saves_dir.get() or str(Path.home()))
+        if selected:
+            self.minecraft_saves_dir.set(selected)
+
     def sync_edit_session(self) -> None:
         self.edit_session = LayerEditSession(Path(self.project_dir.get()))
+        self.world_output_dir.set(str(Path(self.project_dir.get()) / "playable_world"))
 
     def create_project_action(self) -> None:
         try:
@@ -352,6 +404,7 @@ class TraceEditorApp:
             project = load_project(Path(self.project_dir.get()))
             self.sync_edit_session()
             self.project_name.set(project.get("project_name", ""))
+            self.world_name.set(project.get("project_name", "Arnis Korea World"))
             self.bbox.set(bbox_to_text(project["bbox"]))
             spawn = project.get("spawn_point", {})
             self.spawn_lat.set(str(spawn.get("lat", "")))
@@ -661,6 +714,9 @@ class TraceEditorApp:
         for idx, item in enumerate(suggested.get("features", [])):
             props = item.get("properties", {})
             self.suggested_list.insert("end", f"{idx}: {props.get('layer')} confidence={props.get('confidence', '')}")
+        if hasattr(self, "worldgen_button"):
+            enabled = bool(accepted.get("features", []))
+            self.worldgen_button.configure(state="normal" if enabled else "disabled")
 
     def on_accepted_select(self, _event: object) -> None:
         selection = self.accepted_list.curselection()
@@ -846,15 +902,31 @@ class TraceEditorApp:
         self.export_result.delete("1.0", "end")
         self.export_result.insert("end", safe_json(data))
 
+    def export_synthetic_osm_v11(self) -> None:
+        try:
+            from arnis_korea_detailed.trace_worldgen import export_synthetic_osm
+
+            data = export_synthetic_osm(Path(self.project_dir.get()), building_height_mode=self.building_height_mode.get())
+            self.export_result.delete("1.0", "end")
+            self.export_result.insert("end", safe_json({"exported": str(Path(self.project_dir.get()) / "synthetic_osm.json"), "summary": data}))
+        except Exception as exc:
+            write_boot_log("SYNTHETIC_OSM_EXPORT_FAIL", exc)
+            messagebox.showerror("synthetic_osm export 실패", str(exc))
+
     def export_layer_validation(self) -> None:
         data = write_layer_validation_report(Path(self.project_dir.get()))
         self.export_result.delete("1.0", "end")
         self.export_result.insert("end", safe_json(data))
 
     def write_source_policy(self) -> None:
-        from arnis_korea_detailed.trace_editor_core import source_policy_report
+        try:
+            from arnis_korea_detailed.trace_worldgen import write_v11_source_policy_report
 
-        report = source_policy_report(Path(self.project_dir.get()))
+            report = write_v11_source_policy_report(Path(self.project_dir.get()))
+        except Exception:
+            from arnis_korea_detailed.trace_editor_core import source_policy_report
+
+            report = source_policy_report(Path(self.project_dir.get()))
         self.export_result.delete("1.0", "end")
         self.export_result.insert("end", safe_json(report))
 
@@ -862,6 +934,73 @@ class TraceEditorApp:
         report = validate_project(Path(self.project_dir.get()))
         self.report_result.delete("1.0", "end")
         self.report_result.insert("end", safe_json(report))
+
+    def _world_dir(self) -> Path:
+        name = self.world_name.get().strip() or self.project_name.get().strip() or "Arnis Korea World"
+        name = re.sub(r"[^A-Za-z0-9가-힣._ -]+", "_", name).strip(" .") or "Arnis Korea World"
+        return Path(self.project_dir.get()) / "playable_world" / name
+
+    def write_worldgen(self, data: dict[str, object]) -> None:
+        self.worldgen_result.delete("1.0", "end")
+        self.worldgen_result.insert("end", safe_json(data))
+
+    def generate_world_action(self) -> None:
+        paths = project_paths(Path(self.project_dir.get()))
+        accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
+        if not accepted.get("features"):
+            messagebox.showwarning("승인된 레이어 없음", "승인된 레이어가 없습니다. suggested 후보를 먼저 accepted로 승인하거나 직접 그려 저장하세요.")
+            return
+        self.worldgen_button.configure(state="disabled")
+        self.status.set("Arnis Writer로 월드 생성 중입니다.")
+        self.write_worldgen({"status": "월드 생성 시작", "worldgen_input": "accepted_layers_only", "suggested_layers_used_for_worldgen": False})
+
+        def worker() -> None:
+            try:
+                from arnis_korea_detailed.trace_worldgen import copy_world_to_saves, generate_world_from_project
+
+                report = generate_world_from_project(
+                    Path(self.project_dir.get()),
+                    ROOT,
+                    self.world_name.get(),
+                    building_height_mode=self.building_height_mode.get(),
+                    terrain=self.world_terrain.get(),
+                    interior=self.world_interior.get(),
+                    roof=self.world_roof.get(),
+                    scale=float(self.world_scale.get()),
+                    run_load_smoke=False,
+                )
+                if self.copy_to_saves.get():
+                    target = copy_world_to_saves(Path(report["world_dir"]), Path(self.minecraft_saves_dir.get()))
+                    report["copied_to_minecraft_saves"] = str(target)
+                self.root.after(0, lambda report=report: self.after_worldgen(report, None))
+            except Exception as exc:
+                write_boot_log("WORLDGEN_FAIL", exc)
+                self.root.after(0, lambda exc=exc: self.after_worldgen({}, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def after_worldgen(self, report: dict[str, object], exc: BaseException | None) -> None:
+        self.worldgen_button.configure(state="normal")
+        if exc is not None:
+            self.status.set("월드 생성 실패")
+            self.write_worldgen({"passed": False, "message": str(exc), "latest_log": str(LATEST_LOG)})
+            messagebox.showerror("월드 생성 실패", f"{exc}\n\n자세한 내용은 latest.log를 확인하세요.")
+            return
+        self.status.set("월드 생성 완료")
+        self.write_worldgen(report)
+
+    def open_generated_world(self) -> None:
+        open_path(self._world_dir())
+
+    def copy_world_to_saves_action(self) -> None:
+        try:
+            from arnis_korea_detailed.trace_worldgen import copy_world_to_saves
+
+            target = copy_world_to_saves(self._world_dir(), Path(self.minecraft_saves_dir.get()))
+            self.write_worldgen({"copied_to_minecraft_saves": str(target), "copied_only_world_dir": True})
+        except Exception as exc:
+            write_boot_log("COPY_WORLD_TO_SAVES_FAIL", exc)
+            messagebox.showerror("복사 실패", str(exc))
 
 
 def self_test_gui(safe_mode: bool = False) -> int:

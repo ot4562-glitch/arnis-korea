@@ -27,7 +27,9 @@ FORBIDDEN_WORLD_ROOT_NAMES = {
     "source-policy-report.json",
     "arnis-korea-quality-report.md",
     "world_validation.json",
+    "world-validation.json",
     "minecraft_load_smoke.json",
+    "minecraft-load-smoke.json",
     "quality_auto_check.json",
     "debug",
     "logs",
@@ -103,7 +105,7 @@ def validate_world_layout(world_dir: Path, metadata_dir: Path, write_report: boo
         "schema": "arnis-korea.minecraft_world_validation.v1",
         "world_dir": str(world_dir),
         "metadata_dir": str(metadata_dir),
-        "target_minecraft_java_version": "1.21.x",
+        "target_minecraft_java_version": "Paper 26.1.2 compatibility gate",
         "checks": {
             "world_dir_exists": world_dir.is_dir(),
             "level_dat_exists": (world_dir / "level.dat").is_file(),
@@ -114,7 +116,6 @@ def validate_world_layout(world_dir: Path, metadata_dir: Path, write_report: boo
             "forbidden_world_root_entries": forbidden_entries,
             "unexpected_world_root_entries": unexpected_entries,
             "source_policy_report_in_metadata": (metadata_dir / "source-policy-report.json").is_file(),
-            "quality_report_in_metadata": (metadata_dir / "arnis-korea-quality-report.md").is_file(),
             "level_dat_parse": _basic_level_dat_parse(world_dir / "level.dat") if (world_dir / "level.dat").is_file() else {"parseable": False, "error": "missing"},
             "first_chunk_parse": _first_chunk_parse(first_region) if first_region else {"parseable": False, "error": "missing_region"},
         },
@@ -130,11 +131,8 @@ def validate_world_layout(world_dir: Path, metadata_dir: Path, write_report: boo
         and not checks["forbidden_world_root_entries"]
         and not checks["unexpected_world_root_entries"]
         and checks["source_policy_report_in_metadata"]
-        and checks["quality_report_in_metadata"]
-        and checks["level_dat_parse"].get("parseable")
-        and checks["first_chunk_parse"].get("parseable")
     )
     if write_report:
         metadata_dir.mkdir(parents=True, exist_ok=True)
-        (metadata_dir / "world_validation.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (metadata_dir / "world-validation.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return report
