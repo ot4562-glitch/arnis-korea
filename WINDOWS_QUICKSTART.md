@@ -2,35 +2,32 @@
 
 ## 실행
 
-1. Actions artifact `arnis-korea-2.0.0-private-final-windows_x86_64`를 내려받습니다.
+1. Actions artifact `arnis-korea-2.0.1-simple-ux-windows_x86_64`를 내려받습니다.
 2. zip을 풉니다.
 3. `arnis-korea.exe`를 더블클릭합니다.
 
 ## 기본 흐름
 
-1. `프로젝트` 탭에서 새 프로젝트를 만듭니다.
-2. `네이버 API` 탭에서 Client ID/Secret을 저장하고 테스트합니다.
-3. `지도 범위` 탭에서 bbox와 스폰포인트를 정합니다.
-4. `네이버 API` 탭에서 Static Map 배경을 다운로드합니다. 저장/분석 동의가 필요합니다.
-5. `레이어 편집` 탭에서 도로/건물/수역/녹지/철도/스폰포인트를 그립니다.
-6. suggested 후보는 직접 확인한 뒤 승인해야 accepted layer가 됩니다.
-7. `최종 생성 마법사` 탭에서 프로젝트 상태 체크, synthetic OSM 생성, 월드 생성을 순서대로 실행합니다.
-8. `playable_world/<world_name>`만 Minecraft saves로 복사합니다.
+1. 시작하기: 새 지도 만들기 또는 기존 프로젝트 열기를 선택합니다.
+2. 시작하기: 네이버 API 키 상태를 확인하고 필요하면 `API 키 설정`에서 저장/테스트합니다.
+3. 지도 만들기: 지도 범위와 스폰포인트를 정합니다.
+4. 지도 만들기: 네이버 지도 배경을 불러옵니다. 저장/분석 동의가 필요합니다.
+5. 지도 만들기: 도로/건물/수역/녹지/철도/스폰포인트를 그리고 AI 후보를 승인된 레이어로 승인합니다.
+6. 마인크래프트로 내보내기: 월드 이름과 출력 폴더를 확인하고 `월드 생성`을 누릅니다.
+7. 마인크래프트로 내보내기: 생성된 월드를 Minecraft saves로 복사합니다.
 
-## 앱이 안 열릴 때
+## 문제 해결
 
-1. `dev-tools\arnis-korea-debug.exe`를 실행합니다.
-2. `%APPDATA%\ArnisKorea\logs\latest.log`를 확인합니다.
-3. `arnis-korea.exe --safe-mode`를 실행합니다.
+기본 화면 하단의 `문제 해결` 또는 `로그` 버튼을 사용합니다. 앱이 열리지 않으면 `arnis-korea.exe --safe-mode --self-test-gui` 또는 `dev-tools\arnis-korea-debug.exe --self-test-gui`를 실행하고 `%APPDATA%\ArnisKorea\logs\latest.log`를 확인합니다.
 
 로그나 이슈 내용 공유 전 Naver 키 원문이 들어 있지 않은지 확인하세요.
+
+## 고급 설정
+
+초보자 모드에서는 3단계 마법사만 사용합니다. 레이어 직접 가져오기/내보내기, 검사 결과, 데이터 사용 안전 검사, AI 분석 패키지, debug preview, Paper 호환성 검사는 `고급 설정 열기`에서만 사용합니다.
 
 ## 제한
 
 - 개인 개발용이며 공개 배포용이 아닙니다.
 - 네이버 공식 API 무료 사용량 범위 안에서 사용하세요.
-- 월드 생성 품질은 accepted layer trace 품질에 좌우됩니다.
-
-## AI Trace Worker
-
-AI Trace는 Windows EXE 내부 모델이 아니라 OCI 내부 worker 또는 dev-tools CLI로 실행합니다. GUI는 분석 패키지를 내보내고 결과를 suggested 후보로 가져옵니다. 사용자가 승인한 accepted layer만 월드 생성에 사용됩니다.
+- 월드 생성 품질은 승인된 레이어 편집 품질에 좌우됩니다.

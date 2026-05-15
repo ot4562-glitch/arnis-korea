@@ -1,43 +1,47 @@
 # Trace Editor User Guide
 
-Arnis Korea v2.0.0 private-final은 네이버 지도 배경 위에 사용자가 직접 레이어를 만들고, 승인된 accepted layer만으로 Minecraft Java 월드를 생성하는 GUI입니다.
+Arnis Korea v2.0.1 Simple UX는 네이버 지도 배경 위에 사용자가 직접 레이어를 만들고, 승인된 레이어만으로 Minecraft Java 월드를 생성하는 GUI입니다.
+
+## 기본 흐름
+
+1. 시작하기: 새 지도 만들기, 기존 프로젝트 열기, 최근 프로젝트 열기, 네이버 API 키 상태 확인
+2. 지도 만들기: 위치/범위 선택, 네이버 지도 불러오기, AI 후보 생성, 레이어 확인/수정
+3. 마인크래프트로 내보내기: 월드 이름 입력, 월드 생성, Minecraft saves로 복사
 
 ## 핵심 원칙
 
-- suggested layer는 후보입니다.
-- accepted layer만 export와 worldgen 입력입니다.
+- AI 후보는 후보입니다.
+- 승인된 레이어만 내보내기와 월드 생성 입력입니다.
 - Minecraft saves에는 `playable_world/<world_name>`만 복사합니다.
 
 ## 레이어 타입
 
-- road: polyline
-- rail: polyline
-- building: polygon
-- water: polygon
-- green: polygon
-- spawn: point
+- road: 도로
+- rail: 철도
+- building: 건물
+- water: 수역
+- green: 녹지
+- spawn: 스폰포인트
 
 ## 편집
 
-- 그리기: 지도 위를 클릭해 점을 추가하고 `feature 저장`을 누릅니다.
-- 선택: feature/점을 클릭하고 드래그해 이동합니다.
-- 이동: 배경을 pan 합니다.
-- 휠 또는 `+`, `-`, `Reset`으로 zoom을 조정합니다.
-- `선택 점 삭제`, `선택 feature 삭제`, `Undo`, `Redo`를 사용할 수 있습니다.
-- 이름, 메모, class 변경은 선택 feature에 적용됩니다.
+- 그리기: 지도 위를 클릭해 점을 추가하고 `레이어 저장`을 누릅니다.
+- 선택: 레이어/점을 클릭하고 드래그해 이동합니다.
+- 이동: 배경을 이동합니다.
+- 휠 또는 `+`, `-`, `Reset`으로 확대/축소를 조정합니다.
+- `선택 점 삭제`, `선택 레이어 삭제`, `Undo`, `Redo`를 사용할 수 있습니다.
+- 이름, 메모, 종류 변경은 선택한 레이어에 적용됩니다.
 
 ## 최종 생성 마법사
 
-1. 프로젝트 상태 체크
-2. synthetic OSM 미리보기 생성
-3. 월드 생성 실행
-4. 선택적으로 로컬 Paper 26.1.2 smoke 실행
-5. playable world 열기 또는 Minecraft saves로 복사
+마인크래프트로 내보내기 화면은 다음 상태를 표시합니다.
+
+1. 지도 범위 확인: 완료, 필요함, 오류
+2. 승인된 레이어 확인: 완료, 필요함, 오류
+3. 월드 이름 입력: 완료, 필요함, 오류
+4. 월드 생성: 완료, 필요함, 오류
+5. Minecraft saves로 복사: 완료, 필요함, 오류
 
 ## 문제 해결
 
-`문제 해결` 탭에서 latest.log, reports, project validation, source policy validation을 확인할 수 있습니다.
-
-## AI Trace Worker
-
-AI Trace는 Windows EXE 내부 모델이 아니라 OCI 내부 worker 또는 dev-tools CLI로 실행합니다. GUI는 분석 패키지를 내보내고 결과를 suggested 후보로 가져옵니다. 사용자가 승인한 accepted layer만 월드 생성에 사용됩니다.
+`문제 해결` 화면에서 로그, 검사 결과, 프로젝트 검수, 데이터 사용 안전 검사를 확인할 수 있습니다. 고급 기능은 기본 화면에 노출하지 않고 `고급 설정 열기`에서만 접근합니다.

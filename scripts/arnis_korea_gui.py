@@ -45,7 +45,7 @@ def write_boot_log(message: str, exc: BaseException | None = None) -> None:
 
 
 try:
-    from tkinter import BooleanVar, Canvas, Listbox, PhotoImage, StringVar, Tk, filedialog, messagebox, ttk
+    from tkinter import BooleanVar, Canvas, Listbox, PhotoImage, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
     from tkinter.scrolledtext import ScrolledText
 except Exception as tkinter_exc:
     write_boot_log("TKINTER_IMPORT_FAIL", tkinter_exc)
@@ -89,6 +89,7 @@ except Exception as core_exc:
     write_boot_log("CORE_IMPORT_FAIL", core_exc)
 
 SECRETS_PATH = APP_DIR / "secrets.json"
+RECENTS_PATH = APP_DIR / "recent_projects.json"
 STATIC_ENDPOINT = "https://maps.apigw.ntruss.com/map-static/v2/raster"
 
 
@@ -151,11 +152,26 @@ class TraceEditorApp:
         self.world_scale = StringVar(value="1.0")
         self.ai_package_dir = StringVar(value=str(Path(self.project_dir.get()) / "ai_trace_package"))
         self.ai_results_dir = StringVar(value=str(Path(self.project_dir.get()) / "ai_trace_results"))
+        self.current_step = StringVar(value="start")
+        self.api_key_status = StringVar(value="미설정")
+        self.layer_counts = StringVar(value="도로 0개  건물 0개  녹지 0개  수역 0개  철도 0개")
+        self.wizard_status_vars = {
+            "bbox": StringVar(value="필요함"),
+            "layers": StringVar(value="필요함"),
+            "world_name": StringVar(value="필요함"),
+            "worldgen": StringVar(value="필요함"),
+            "saves": StringVar(value="필요함"),
+        }
+        self.recent_projects = self._load_recent_projects() if not safe_mode else []
+        self.advanced_window = None
+        self.api_settings_window = None
+        self.troubleshooting_window = None
 
         self._style()
         if not self.safe_mode:
             self._load_saved_keys()
         self._build()
+        self.refresh_api_status()
         self.refresh_project_view()
 
     def _style(self) -> None:
@@ -170,13 +186,19 @@ class TraceEditorApp:
 
     def _build(self) -> None:
         outer = ttk.Frame(self.root, padding=16)
+        self.outer = outer
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text="Arnis Korea - 네이버 지도 월드 생성기", style="Title.TLabel").pack(anchor="w")
-        self.status = StringVar(value="private-final v2.0.0: 승인된 accepted layer만 월드 생성에 사용합니다.")
+        self.status = StringVar(value="3단계로 지도 범위를 정하고, 승인된 레이어를 확인한 뒤 Minecraft 월드로 내보냅니다.")
         ttk.Label(outer, textvariable=self.status).pack(anchor="w", pady=(4, 10))
 
-        notebook = ttk.Notebook(outer)
+        self.advanced_host = ttk.Frame(outer)
+        advanced_bar = ttk.Frame(self.advanced_host)
+        advanced_bar.pack(fill="x", pady=(0, 8))
+        ttk.Button(advanced_bar, text="초보자 모드로 돌아가기", command=self.close_advanced_settings).pack(side="left")
+        notebook = ttk.Notebook(self.advanced_host)
         notebook.pack(fill="both", expand=True)
+        self.advanced_notebook = notebook
         self.tabs: dict[str, ttk.Frame] = {}
         for label in ["프로젝트", "네이버 API", "지도 범위", "레이어 편집", "AI Trace", "내보내기", "월드 생성", "최종 생성 마법사", "문제 해결", "검수/리포트", "도움말"]:
             frame = ttk.Frame(notebook, padding=12)
@@ -193,6 +215,104 @@ class TraceEditorApp:
         self._build_troubleshooting_tab()
         self._build_report_tab()
         self._build_help_tab()
+        self._build_simple_wizard(outer)
+
+    def _build_simple_wizard(self, outer: ttk.Frame) -> None:
+        shell = ttk.Frame(outer)
+        self.simple_shell = shell
+        shell.pack(fill="both", expand=True)
+        progress = ttk.Frame(shell)
+        progress.pack(side="left", fill="y", padx=(0, 14))
+        self.step_buttons = {}
+        for key, label in [("start", "1. 시작하기"), ("map", "2. 지도 만들기"), ("export", "3. 마인크래프트로 내보내기")]:
+            button = ttk.Button(progress, text=label, command=lambda key=key: self.show_wizard_step(key))
+            button.pack(fill="x", pady=(0, 8))
+            self.step_buttons[key] = button
+        ttk.Separator(progress).pack(fill="x", pady=8)
+        ttk.Button(progress, text="고급 설정 열기", command=self.open_advanced_settings).pack(fill="x", pady=(0, 8))
+
+        content = ttk.Frame(shell)
+        content.pack(side="left", fill="both", expand=True)
+        self.wizard_frames: dict[str, ttk.Frame] = {}
+        for key in ["start", "map", "export"]:
+            frame = ttk.Frame(content)
+            frame.grid(row=0, column=0, sticky="nsew")
+            self.wizard_frames[key] = frame
+        content.rowconfigure(0, weight=1)
+        content.columnconfigure(0, weight=1)
+
+        self._build_wizard_start(self.wizard_frames["start"])
+        self._build_wizard_map(self.wizard_frames["map"])
+        self._build_wizard_export(self.wizard_frames["export"])
+
+        footer = ttk.Frame(outer)
+        self.simple_footer = footer
+        footer.pack(fill="x", pady=(10, 0))
+        ttk.Button(footer, text="로그", command=self.open_latest_log).pack(side="right")
+        ttk.Button(footer, text="문제 해결", command=self.open_troubleshooting).pack(side="right", padx=(0, 8))
+        self.show_wizard_step("start")
+
+    def _build_wizard_start(self, frame: ttk.Frame) -> None:
+        ttk.Label(frame, text="시작하기", style="Title.TLabel").pack(anchor="w")
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(14, 10))
+        ttk.Button(actions, text="새 지도 만들기", style="Primary.TButton", command=self.create_project_from_wizard).pack(side="left")
+        ttk.Button(actions, text="기존 프로젝트 열기", command=self.open_project_from_wizard).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="도움말", command=self.show_beginner_help).pack(side="left", padx=(8, 0))
+        api = ttk.Frame(frame)
+        api.pack(fill="x", pady=(4, 10))
+        ttk.Label(api, text="네이버 API 키 상태").pack(side="left")
+        ttk.Label(api, textvariable=self.api_key_status).pack(side="left", padx=(8, 16))
+        ttk.Button(api, text="API 키 설정", command=self.open_api_settings).pack(side="left")
+        ttk.Label(frame, text="최근 프로젝트").pack(anchor="w", pady=(12, 4))
+        self.recent_list = Listbox(frame, height=8)
+        self.recent_list.pack(fill="x")
+        self.recent_list.bind("<Double-Button-1>", lambda _event: self.open_selected_recent_project())
+        ttk.Button(frame, text="최근 프로젝트 열기", command=self.open_selected_recent_project).pack(anchor="w", pady=(8, 0))
+
+    def _build_wizard_map(self, frame: ttk.Frame) -> None:
+        ttk.Label(frame, text="지도 만들기", style="Title.TLabel").pack(anchor="w")
+        form = ttk.Frame(frame)
+        form.pack(fill="x", pady=(14, 8))
+        self._row(form, "지도 범위", ttk.Entry(form, textvariable=self.bbox), 0)
+        self._row(form, "스폰 lat", ttk.Entry(form, textvariable=self.spawn_lat), 1)
+        self._row(form, "스폰 lng", ttk.Entry(form, textvariable=self.spawn_lng), 2)
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(0, 10))
+        ttk.Button(actions, text="위치/범위 선택", command=self.open_selector).pack(side="left")
+        ttk.Button(actions, text="네이버 지도 불러오기", command=self.download_static_background).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="AI 후보 생성", command=self.generate_mock_suggested).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="레이어 확인/수정", command=self.open_layer_editor).pack(side="left", padx=(8, 0))
+        ttk.Label(frame, text="승인된 레이어 수").pack(anchor="w", pady=(12, 4))
+        ttk.Label(frame, textvariable=self.layer_counts).pack(anchor="w")
+        ttk.Button(frame, text="다음: 월드 생성", style="Primary.TButton", command=lambda: self.show_wizard_step("export")).pack(anchor="w", pady=(18, 0))
+
+    def _build_wizard_export(self, frame: ttk.Frame) -> None:
+        ttk.Label(frame, text="마인크래프트로 내보내기", style="Title.TLabel").pack(anchor="w")
+        status = ttk.Frame(frame)
+        status.pack(fill="x", pady=(14, 10))
+        for row, (key, label) in enumerate([
+            ("bbox", "1. 지도 범위 확인"),
+            ("layers", "2. 승인된 레이어 확인"),
+            ("world_name", "3. 월드 이름 입력"),
+            ("worldgen", "4. 월드 생성"),
+            ("saves", "5. Minecraft saves로 복사"),
+        ]):
+            ttk.Label(status, text=label).grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Label(status, textvariable=self.wizard_status_vars[key]).grid(row=row, column=1, sticky="w", padx=(14, 0), pady=3)
+        form = ttk.Frame(frame)
+        form.pack(fill="x", pady=(6, 8))
+        self._row(form, "월드 이름", ttk.Entry(form, textvariable=self.world_name), 0)
+        self._row(form, "출력 폴더", ttk.Entry(form, textvariable=self.world_output_dir), 1, ttk.Button(form, text="선택", command=self.choose_world_output_dir))
+        self._row(form, "Minecraft saves", ttk.Entry(form, textvariable=self.minecraft_saves_dir), 2, ttk.Button(form, text="선택", command=self.choose_saves_dir))
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(6, 10))
+        ttk.Button(actions, text="월드 생성", style="Primary.TButton", command=self.generate_world_action).pack(side="left")
+        ttk.Button(actions, text="Minecraft saves로 복사", command=self.copy_world_to_saves_action).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="생성된 월드 폴더 열기", command=self.open_generated_world).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="게임에서 여는 방법 보기", command=self.show_minecraft_open_help).pack(side="left", padx=(8, 0))
+        self.wizard_export_result = ScrolledText(frame, height=12, font=("Consolas", 10), wrap="word")
+        self.wizard_export_result.pack(fill="both", expand=True)
 
     def _row(self, parent: ttk.Frame, label: str, widget: ttk.Widget, row: int, button: ttk.Widget | None = None) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 10), pady=6)
@@ -237,13 +357,13 @@ class TraceEditorApp:
         tab = self.tabs["지도 범위"]
         form = ttk.Frame(tab)
         form.pack(fill="x")
-        self._row(form, "bbox", ttk.Entry(form, textvariable=self.bbox), 0)
+        self._row(form, "지도 범위", ttk.Entry(form, textvariable=self.bbox), 0)
         self._row(form, "스폰 lat", ttk.Entry(form, textvariable=self.spawn_lat), 1)
         self._row(form, "스폰 lng", ttk.Entry(form, textvariable=self.spawn_lng), 2)
         actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=10)
-        ttk.Button(actions, text="HUFS 샘플 bbox", command=self.set_hufs_bbox).pack(side="left")
-        ttk.Button(actions, text="bbox 중심 자동", command=self.set_spawn_center).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="HUFS 샘플 지도 범위", command=self.set_hufs_bbox).pack(side="left")
+        ttk.Button(actions, text="지도 범위 중심 자동", command=self.set_spawn_center).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="요청 계획 표시", command=self.show_request_plan).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Dynamic selector 열기", command=self.open_selector).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="selector 결과 JSON import", command=self.import_selector_json).pack(side="left", padx=(8, 0))
@@ -268,23 +388,23 @@ class TraceEditorApp:
         ttk.Button(zoom, text="-", command=lambda: self.zoom_canvas(0.8)).pack(side="left", fill="x", expand=True, padx=(4, 0))
         ttk.Button(zoom, text="Reset", command=self.reset_view).pack(side="left", fill="x", expand=True, padx=(4, 0))
         ttk.Button(left, text="점 초기화", command=self.clear_canvas_points).pack(fill="x", pady=(6, 0))
-        ttk.Button(left, text="feature 저장", command=self.save_canvas_feature).pack(fill="x", pady=(6, 0))
-        ttk.Button(left, text="이름/메모/class 적용", command=self.apply_selected_properties).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="레이어 저장", command=self.save_canvas_feature).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="이름/메모/종류 적용", command=self.apply_selected_properties).pack(fill="x", pady=(6, 0))
         ttk.Button(left, text="선택 점 삭제", command=self.delete_selected_vertex).pack(fill="x", pady=(6, 0))
-        ttk.Button(left, text="선택 feature 삭제", command=self.delete_selected_accepted).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="선택 레이어 삭제", command=self.delete_selected_accepted).pack(fill="x", pady=(6, 0))
         ttk.Button(left, text="Undo", command=self.undo_edit).pack(fill="x", pady=(6, 0))
         ttk.Button(left, text="Redo", command=self.redo_edit).pack(fill="x", pady=(6, 0))
-        ttk.Button(left, text="mock 후보 생성", command=self.generate_mock_suggested).pack(fill="x", pady=(12, 0))
-        ttk.Button(left, text="suggested 승인", command=self.approve_selected_suggested).pack(fill="x", pady=(6, 0))
-        ttk.Button(left, text="accepted를 suggested로", command=self.revert_selected_accepted).pack(fill="x", pady=(6, 0))
-        ttk.Checkbutton(left, text="suggested 보기", variable=self.show_suggested, command=self.draw_canvas).pack(anchor="w", pady=(12, 0))
+        ttk.Button(left, text="AI 후보 생성", command=self.generate_mock_suggested).pack(fill="x", pady=(12, 0))
+        ttk.Button(left, text="AI 후보 승인", command=self.approve_selected_suggested).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="승인된 레이어를 AI 후보로 되돌리기", command=self.revert_selected_accepted).pack(fill="x", pady=(6, 0))
+        ttk.Checkbutton(left, text="AI 후보 보기", variable=self.show_suggested, command=self.draw_canvas).pack(anchor="w", pady=(12, 0))
         for name, var in self.layer_visible.items():
             ttk.Checkbutton(left, text=name, variable=var, command=self.draw_canvas).pack(anchor="w")
-        ttk.Label(left, text="Accepted").pack(anchor="w", pady=(12, 2))
+        ttk.Label(left, text="승인된 레이어").pack(anchor="w", pady=(12, 2))
         self.accepted_list = Listbox(left, width=34, height=8)
         self.accepted_list.pack(fill="x")
         self.accepted_list.bind("<<ListboxSelect>>", self.on_accepted_select)
-        ttk.Label(left, text="Suggested").pack(anchor="w", pady=(12, 2))
+        ttk.Label(left, text="AI 후보").pack(anchor="w", pady=(12, 2))
         self.suggested_list = Listbox(left, width=34, height=8)
         self.suggested_list.pack(fill="x")
 
@@ -298,24 +418,24 @@ class TraceEditorApp:
         self.canvas.bind("<MouseWheel>", self.on_mousewheel)
         self.canvas.bind("<Button-4>", lambda event: self.zoom_canvas(1.1, event.x, event.y))
         self.canvas.bind("<Button-5>", lambda event: self.zoom_canvas(0.9, event.x, event.y))
-        ttk.Label(right, text="그리기: 점 추가 후 feature 저장. 선택: feature/점을 선택하고 점 이동/삭제. 이동: 배경 pan. 휠: zoom.").pack(anchor="w", pady=(6, 0))
+        ttk.Label(right, text="그리기: 점 추가 후 레이어 저장. 선택: 레이어/점을 선택하고 점 이동/삭제. 이동: 배경 이동. 휠: 확대/축소.").pack(anchor="w", pady=(6, 0))
 
     def _build_export_tab(self) -> None:
         tab = self.tabs["내보내기"]
-        ttk.Label(tab, text="accepted_layers.geojson과 synthetic_osm.json은 승인된 accepted layer만 사용합니다. suggested 후보는 월드 생성 입력이 아닙니다.").pack(anchor="w")
+        ttk.Label(tab, text="승인된 레이어와 월드 생성용 변환 데이터만 월드 생성에 사용합니다. AI 후보는 월드 생성 입력이 아닙니다.").pack(anchor="w")
         actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=10)
-        ttk.Button(actions, text="accepted_layers.geojson export", command=self.export_accepted).pack(side="left")
-        ttk.Button(actions, text="synthetic_osm_preview.json export", command=self.export_synthetic).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="synthetic_osm.json export", command=self.export_synthetic_osm_v11).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="layer_validation_report.json 생성", command=self.export_layer_validation).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="source-policy-report.json 생성", command=self.write_source_policy).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="승인된 레이어 직접 내보내기", command=self.export_accepted).pack(side="left")
+        ttk.Button(actions, text="월드 생성용 변환 데이터 미리보기", command=self.export_synthetic).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="월드 생성용 변환 데이터 내보내기", command=self.export_synthetic_osm_v11).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="레이어 검사 결과 생성", command=self.export_layer_validation).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="데이터 사용 안전 검사", command=self.write_source_policy).pack(side="left", padx=(8, 0))
         self.export_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
         self.export_result.pack(fill="both", expand=True)
 
     def _build_ai_trace_tab(self) -> None:
         tab = self.tabs["AI Trace"]
-        ttk.Label(tab, text="AI 분석은 Windows EXE 내부 모델이 아니라 OCI AI Trace Worker 또는 dev-tools CLI에서 수행합니다. 결과는 suggested 후보로 가져오며 사용자가 승인해야 accepted layer가 됩니다.").pack(anchor="w")
+        ttk.Label(tab, text="AI 분석은 고급 도구에서 수행합니다. 결과는 AI 후보로 가져오며 사용자가 승인해야 승인된 레이어가 됩니다.").pack(anchor="w")
         form = ttk.Frame(tab)
         form.pack(fill="x", pady=(10, 0))
         self._row(form, "분석 패키지 폴더", ttk.Entry(form, textvariable=self.ai_package_dir), 0, ttk.Button(form, text="선택", command=self.choose_ai_package_dir))
@@ -331,7 +451,7 @@ class TraceEditorApp:
 
     def _build_worldgen_tab(self) -> None:
         tab = self.tabs["월드 생성"]
-        ttk.Label(tab, text="월드 생성은 accepted_layers.geojson만 사용합니다. 승인되지 않은 suggested layer는 절대 포함하지 않습니다.").pack(anchor="w")
+        ttk.Label(tab, text="월드 생성은 승인된 레이어만 사용합니다. 승인되지 않은 AI 후보는 포함하지 않습니다.").pack(anchor="w")
         form = ttk.Frame(tab)
         form.pack(fill="x", pady=(10, 0))
         self._row(form, "월드 이름", ttk.Entry(form, textvariable=self.world_name), 0)
@@ -348,7 +468,7 @@ class TraceEditorApp:
         ttk.Entry(options, textvariable=self.world_scale, width=8).pack(side="left")
         ttk.Checkbutton(options, text="Minecraft saves로 바로 복사", variable=self.copy_to_saves).pack(side="left", padx=(14, 0))
         ttk.Checkbutton(options, text="같은 이름 덮어쓰기", variable=self.overwrite_saves).pack(side="left", padx=(8, 0))
-        ttk.Checkbutton(options, text="로컬 Paper 26.1.2 smoke", variable=self.run_local_load_smoke).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(options, text="로컬 마인크래프트 호환성 검사", variable=self.run_local_load_smoke).pack(side="left", padx=(8, 0))
         actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=(4, 10))
         self.worldgen_button = ttk.Button(actions, text="월드 생성", style="Primary.TButton", command=self.generate_world_action)
@@ -361,28 +481,28 @@ class TraceEditorApp:
 
     def _build_final_wizard_tab(self) -> None:
         tab = self.tabs["최종 생성 마법사"]
-        ttk.Label(tab, text="프로젝트 검수부터 synthetic OSM 생성, 월드 생성, Paper smoke 선택 실행, Minecraft saves 복사까지 한 화면에서 진행합니다.").pack(anchor="w")
-        ttk.Label(tab, text="마법사는 accepted layer만 사용합니다. suggested layer는 승인 전까지 후보일 뿐입니다.").pack(anchor="w", pady=(2, 8))
+        ttk.Label(tab, text="프로젝트 검수부터 월드 생성용 변환 데이터 생성, 월드 생성, 마인크래프트 호환성 검사 선택 실행, Minecraft saves 복사까지 한 화면에서 진행합니다.").pack(anchor="w")
+        ttk.Label(tab, text="마법사는 승인된 레이어만 사용합니다. AI 후보는 승인 전까지 후보일 뿐입니다.").pack(anchor="w", pady=(2, 8))
         actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=(0, 10))
         ttk.Button(actions, text="1. 프로젝트 상태 체크", command=self.final_check_project).pack(side="left")
-        ttk.Button(actions, text="2. synthetic OSM 미리보기 생성", command=self.export_synthetic_osm_v11).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="2. 월드 생성용 변환 데이터 생성", command=self.export_synthetic_osm_v11).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="3. 월드 생성 실행", style="Primary.TButton", command=self.generate_world_action).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="4. Minecraft saves로 복사", command=self.copy_world_to_saves_action).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="playable world 열기", command=self.open_generated_world).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="reports 열기", command=self.open_reports_dir).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="생성된 월드 열기", command=self.open_generated_world).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="검사 결과 열기", command=self.open_reports_dir).pack(side="left", padx=(8, 0))
         self.final_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
         self.final_result.pack(fill="both", expand=True)
 
     def _build_troubleshooting_tab(self) -> None:
         tab = self.tabs["문제 해결"]
-        ttk.Label(tab, text="앱이 열리지 않거나 월드 생성이 실패하면 latest.log와 reports 폴더를 먼저 확인하세요. 키 원문은 공유하지 마세요.").pack(anchor="w")
+        ttk.Label(tab, text="앱이 열리지 않거나 월드 생성이 실패하면 로그와 검사 결과 폴더를 먼저 확인하세요. 키 원문은 공유하지 마세요.").pack(anchor="w")
         actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=10)
-        ttk.Button(actions, text="latest.log 열기", command=self.open_latest_log).pack(side="left")
-        ttk.Button(actions, text="reports 폴더 열기", command=self.open_reports_dir).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="로그 열기", command=self.open_latest_log).pack(side="left")
+        ttk.Button(actions, text="검사 결과 폴더 열기", command=self.open_reports_dir).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="프로젝트 검수 실행", command=self.validate_action).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="source policy 검수", command=self.write_source_policy).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="데이터 사용 안전 검사", command=self.write_source_policy).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="로컬 프로젝트 진단", command=self.local_project_diagnosis).pack(side="left", padx=(8, 0))
         self.troubleshooting_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
         self.troubleshooting_result.pack(fill="both", expand=True)
@@ -392,24 +512,185 @@ class TraceEditorApp:
         actions = ttk.Frame(tab)
         actions.pack(fill="x")
         ttk.Button(actions, text="검수 실행", style="Primary.TButton", command=self.validate_action).pack(side="left")
-        ttk.Button(actions, text="reports 폴더 열기", command=lambda: open_path(project_paths(Path(self.project_dir.get()))["reports"])).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="검사 결과 폴더 열기", command=lambda: open_path(project_paths(Path(self.project_dir.get()))["reports"])).pack(side="left", padx=(8, 0))
         self.report_result = ScrolledText(tab, height=26, font=("Consolas", 10), wrap="word")
         self.report_result.pack(fill="both", expand=True, pady=(10, 0))
 
     def _build_help_tab(self) -> None:
         text = (
             "사용 순서\n"
-            "1. 프로젝트 탭에서 새 프로젝트를 만듭니다.\n"
-            "2. 지도 범위 탭에서 bbox와 스폰포인트를 확인합니다.\n"
+            "1. 시작하기 단계에서 새 지도 만들기를 누릅니다.\n"
+            "2. 지도 만들기 단계에서 지도 범위와 스폰포인트를 확인합니다.\n"
             "3. 네이버 API 탭에서 공식 Static Map API 키를 저장하고 테스트합니다.\n"
             "4. 레이어 편집 탭에서 도로/건물/수역/녹지/철도/스폰포인트를 직접 그립니다.\n"
-            "5. suggested 후보는 승인 버튼을 눌러야 accepted layer로 들어갑니다.\n"
-            "6. 내보내기 탭에서 accepted_layers.geojson과 synthetic_osm.json을 생성합니다.\n"
-            "7. 월드 생성 탭에서 accepted layer 기반 월드를 생성합니다.\n\n"
-            f"공식 Static Map API와 사용자 수동 trace만 입력으로 사용합니다. 월드 생성은 accepted layer only입니다.\n\n로그 파일: {LATEST_LOG}"
+            "5. AI 후보는 승인 버튼을 눌러야 승인된 레이어로 들어갑니다.\n"
+            "6. 마인크래프트로 내보내기 단계에서 월드를 생성하고 Minecraft saves로 복사합니다.\n\n"
+            f"공식 Static Map API와 사용자 수동 편집만 입력으로 사용합니다. 월드 생성은 승인된 레이어만 사용합니다.\n\n로그 파일: {LATEST_LOG}"
         )
         ttk.Label(self.tabs["도움말"], text=text, justify="left").pack(anchor="nw")
         ttk.Button(self.tabs["도움말"], text="로그 보기", command=self.open_latest_log).pack(anchor="w", pady=(12, 0))
+
+    def _load_recent_projects(self) -> list[str]:
+        try:
+            data = json.loads(RECENTS_PATH.read_text(encoding="utf-8"))
+            return [str(item) for item in data if isinstance(item, str)][:8]
+        except Exception:
+            return []
+
+    def _save_recent_projects(self) -> None:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        write_json(RECENTS_PATH, self.recent_projects[:8])
+
+    def remember_project(self, path: Path) -> None:
+        text = str(path)
+        self.recent_projects = [text] + [item for item in self.recent_projects if item != text]
+        self.recent_projects = self.recent_projects[:8]
+        if not self.safe_mode:
+            self._save_recent_projects()
+        self.refresh_recent_projects()
+
+    def refresh_recent_projects(self) -> None:
+        if not hasattr(self, "recent_list"):
+            return
+        self.recent_list.delete(0, "end")
+        for item in self.recent_projects:
+            self.recent_list.insert("end", item)
+
+    def refresh_api_status(self, tested: bool = False) -> None:
+        if not self.client_id.get().strip() or not self.client_secret.get().strip():
+            self.api_key_status.set("미설정")
+        elif tested:
+            self.api_key_status.set("설정됨")
+        else:
+            self.api_key_status.set("테스트 필요")
+
+    def show_wizard_step(self, key: str) -> None:
+        self.current_step.set(key)
+        self.refresh_api_status(tested=self.api_key_status.get() == "설정됨")
+        self.refresh_layer_summary()
+        self.refresh_recent_projects()
+        self.update_final_wizard_statuses()
+        self.wizard_frames[key].tkraise()
+
+    def create_project_from_wizard(self) -> None:
+        self.create_project_action()
+        self.remember_project(Path(self.project_dir.get()))
+        self.show_wizard_step("map")
+
+    def open_project_from_wizard(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.project_dir.get() or str(ROOT))
+        if selected:
+            self.project_dir.set(selected)
+            self.load_project_action()
+            self.remember_project(Path(selected))
+            self.show_wizard_step("map")
+
+    def open_selected_recent_project(self) -> None:
+        selection = self.recent_list.curselection()
+        if not selection:
+            return
+        self.project_dir.set(self.recent_list.get(selection[0]))
+        self.load_project_action()
+        self.remember_project(Path(self.project_dir.get()))
+        self.show_wizard_step("map")
+
+    def open_advanced_settings(self) -> None:
+        self.simple_shell.pack_forget()
+        self.simple_footer.pack_forget()
+        self.advanced_host.pack(fill="both", expand=True)
+
+    def close_advanced_settings(self) -> None:
+        self.advanced_host.pack_forget()
+        self.simple_shell.pack(fill="both", expand=True)
+        self.simple_footer.pack(fill="x", pady=(10, 0))
+
+    def open_troubleshooting(self) -> None:
+        if self.troubleshooting_window is not None and self.troubleshooting_window.winfo_exists():
+            self.troubleshooting_window.lift()
+            return
+        window = Toplevel(self.root)
+        self.troubleshooting_window = window
+        window.title("문제 해결")
+        window.geometry("760x420")
+        body = ttk.Frame(window, padding=14)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="문제가 생기면 로그와 검사 결과를 확인하세요. 키 원문은 공유하지 마세요.").pack(anchor="w")
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", pady=10)
+        ttk.Button(actions, text="로그 열기", command=self.open_latest_log).pack(side="left")
+        ttk.Button(actions, text="검사 결과 폴더 열기", command=self.open_reports_dir).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="프로젝트 검수 실행", command=self.validate_action).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="닫기", command=window.destroy).pack(side="left", padx=(8, 0))
+        self.beginner_troubleshooting_result = ScrolledText(body, height=14, font=("Consolas", 10), wrap="word")
+        self.beginner_troubleshooting_result.pack(fill="both", expand=True)
+        self.beginner_troubleshooting_result.insert("end", safe_json({"latest_log": str(LATEST_LOG), "project_dir": self.project_dir.get()}))
+
+    def open_api_settings(self) -> None:
+        if self.api_settings_window is not None and self.api_settings_window.winfo_exists():
+            self.api_settings_window.lift()
+            return
+        window = Toplevel(self.root)
+        self.api_settings_window = window
+        window.title("API 키 설정")
+        window.geometry("560x220")
+        body = ttk.Frame(window, padding=14)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="네이버 API 키 상태").grid(row=0, column=0, sticky="w", pady=6)
+        ttk.Label(body, textvariable=self.api_key_status).grid(row=0, column=1, sticky="w", pady=6)
+        self._row(body, "Client ID", ttk.Entry(body, textvariable=self.client_id), 1)
+        self._row(body, "Client Secret", ttk.Entry(body, textvariable=self.client_secret, show="*"), 2)
+        actions = ttk.Frame(body)
+        actions.grid(row=3, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ttk.Button(actions, text="저장", command=self.save_keys).pack(side="left")
+        ttk.Button(actions, text="삭제", command=self.delete_keys).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="테스트", command=self.test_static_api).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="닫기", command=window.destroy).pack(side="left", padx=(8, 0))
+
+    def open_layer_editor(self) -> None:
+        self.open_advanced_settings()
+        self.advanced_notebook.select(self.tabs["레이어 편집"])
+
+    def open_help(self) -> None:
+        self.open_advanced_settings()
+        self.advanced_notebook.select(self.tabs["도움말"])
+
+    def show_beginner_help(self) -> None:
+        messagebox.showinfo(
+            "도움말",
+            "1. 시작하기에서 새 지도 만들기 또는 기존 프로젝트 열기를 선택합니다.\n"
+            "2. 지도 만들기에서 지도 범위, 네이버 지도, AI 후보, 승인된 레이어를 확인합니다.\n"
+            "3. 마인크래프트로 내보내기에서 월드 이름을 입력하고 월드를 생성한 뒤 Minecraft saves로 복사합니다.",
+        )
+
+    def show_minecraft_open_help(self) -> None:
+        messagebox.showinfo("게임에서 여는 방법", "월드를 생성한 뒤 Minecraft saves로 복사하세요. Minecraft Java Edition을 열고 싱글플레이에서 월드 이름을 선택하면 됩니다.")
+
+    def refresh_layer_summary(self) -> None:
+        paths = project_paths(Path(self.project_dir.get()))
+        accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
+        counts = {"road": 0, "building": 0, "green": 0, "water": 0, "rail": 0}
+        for item in accepted.get("features", []):
+            layer = item.get("properties", {}).get("layer")
+            if layer in counts:
+                counts[layer] += 1
+        self.layer_counts.set(f"도로 {counts['road']}개  건물 {counts['building']}개  녹지 {counts['green']}개  수역 {counts['water']}개  철도 {counts['rail']}개")
+
+    def update_final_wizard_statuses(self, worldgen_done: bool = False, saves_done: bool = False) -> None:
+        try:
+            parse_bbox_text(self.bbox.get())
+            self.wizard_status_vars["bbox"].set("완료")
+        except Exception:
+            self.wizard_status_vars["bbox"].set("오류")
+        paths = project_paths(Path(self.project_dir.get()))
+        accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
+        self.wizard_status_vars["layers"].set("완료" if accepted.get("features") else "필요함")
+        self.wizard_status_vars["world_name"].set("완료" if self.world_name.get().strip() else "필요함")
+        if worldgen_done or self._world_dir().exists():
+            self.wizard_status_vars["worldgen"].set("완료")
+        elif not accepted.get("features"):
+            self.wizard_status_vars["worldgen"].set("필요함")
+        if saves_done:
+            self.wizard_status_vars["saves"].set("완료")
 
     def _load_saved_keys(self) -> None:
         if not SECRETS_PATH.exists():
@@ -427,6 +708,7 @@ class TraceEditorApp:
             self.project_dir.set(selected)
             self.sync_edit_session()
             self.refresh_project_view()
+            self.remember_project(Path(selected))
 
     def choose_world_output_dir(self) -> None:
         selected = filedialog.askdirectory(initialdir=self.world_output_dir.get() or self.project_dir.get() or str(ROOT))
@@ -469,6 +751,7 @@ class TraceEditorApp:
             self.write_project_text(project)
             self.refresh_layer_lists()
             self.draw_canvas()
+            self.remember_project(Path(self.project_dir.get()))
         except Exception as exc:
             messagebox.showerror("프로젝트 생성 실패", str(exc))
 
@@ -485,6 +768,7 @@ class TraceEditorApp:
             self.write_project_text(project)
             self.refresh_layer_lists()
             self.draw_canvas()
+            self.remember_project(Path(self.project_dir.get()))
         except Exception as exc:
             messagebox.showerror("불러오기 실패", str(exc))
 
@@ -514,6 +798,7 @@ class TraceEditorApp:
     def save_keys(self) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         write_json(SECRETS_PATH, {"client_id": self.client_id.get().strip(), "client_secret": self.client_secret.get().strip()})
+        self.refresh_api_status()
         self.write_api({"saved": True, "path": str(SECRETS_PATH), "client_id_present": bool(self.client_id.get().strip()), "client_secret_present": bool(self.client_secret.get().strip())})
 
     def delete_keys(self) -> None:
@@ -521,6 +806,7 @@ class TraceEditorApp:
             SECRETS_PATH.unlink()
         self.client_id.set("")
         self.client_secret.set("")
+        self.refresh_api_status()
         self.write_api({"deleted": True, "path": str(SECRETS_PATH)})
 
     def test_static_api(self) -> None:
@@ -531,7 +817,7 @@ class TraceEditorApp:
                 url = f"{STATIC_ENDPOINT}?{urllib.parse.urlencode(params)}"
                 headers = {"x-ncp-apigw-api-key-id": self.client_id.get().strip(), "x-ncp-apigw-api-key": self.client_secret.get().strip()}
                 if not headers["x-ncp-apigw-api-key-id"] or not headers["x-ncp-apigw-api-key"]:
-                    result = {"executed": False, "reason": "키를 먼저 입력하세요."}
+                    result = {"executed": False, "reason": "네이버 API 키가 설정되지 않았습니다."}
                 else:
                     request = urllib.request.Request(url, headers=headers, method="GET")
                     try:
@@ -566,7 +852,7 @@ class TraceEditorApp:
                 params = project["naver_static_map_request_plan"]["tiles"][0]["params"]
                 headers = {"x-ncp-apigw-api-key-id": self.client_id.get().strip(), "x-ncp-apigw-api-key": self.client_secret.get().strip()}
                 if not headers["x-ncp-apigw-api-key-id"] or not headers["x-ncp-apigw-api-key"]:
-                    result = {"executed": False, "reason": "키를 먼저 입력하세요."}
+                    result = {"executed": False, "reason": "네이버 API 키가 설정되지 않았습니다."}
                 else:
                     request = urllib.request.Request(f"{STATIC_ENDPOINT}?{urllib.parse.urlencode(params)}", headers=headers, method="GET")
                     with urllib.request.urlopen(request, timeout=20) as response:
@@ -593,6 +879,10 @@ class TraceEditorApp:
             self.refresh_project_view()
 
     def write_api(self, data: dict[str, object]) -> None:
+        if data.get("executed") is True and data.get("status") == 200:
+            self.refresh_api_status(tested=True)
+        elif data.get("executed") is True:
+            self.refresh_api_status(tested=False)
         self.api_result.delete("1.0", "end")
         self.api_result.insert("end", safe_json(data))
 
@@ -765,13 +1055,15 @@ class TraceEditorApp:
     def approve_selected_suggested(self) -> None:
         selection = list(self.suggested_list.curselection())
         if not selection:
-            messagebox.showwarning("선택 필요", "승인할 suggested feature를 선택하세요.")
+            messagebox.showwarning("선택 필요", "승인할 AI 후보를 선택하세요.")
             return
         count = approve_suggested(Path(self.project_dir.get()), selection)
         export_synthetic_osm_preview(Path(self.project_dir.get()))
         self.refresh_layer_lists()
         self.draw_canvas()
-        self.status.set(f"{count}개 suggested feature를 accepted layer로 승인했습니다.")
+        self.refresh_layer_summary()
+        self.update_final_wizard_statuses()
+        self.status.set(f"{count}개 AI 후보를 승인된 레이어로 승인했습니다.")
 
     def refresh_layer_lists(self, preserve_selection: bool = False) -> None:
         paths = project_paths(Path(self.project_dir.get()))
@@ -786,10 +1078,13 @@ class TraceEditorApp:
         self.suggested_list.delete(0, "end")
         for idx, item in enumerate(suggested.get("features", [])):
             props = item.get("properties", {})
-            self.suggested_list.insert("end", f"{idx}: {props.get('layer')} confidence={props.get('confidence', '')}")
+            self.suggested_list.insert("end", f"{idx}: {props.get('layer')} 신뢰도={props.get('confidence', '')}")
         if hasattr(self, "worldgen_button"):
             enabled = bool(accepted.get("features", []))
             self.worldgen_button.configure(state="normal" if enabled else "disabled")
+        if hasattr(self, "layer_counts"):
+            self.refresh_layer_summary()
+            self.update_final_wizard_statuses()
 
     def on_accepted_select(self, _event: object) -> None:
         selection = self.accepted_list.curselection()
@@ -844,7 +1139,7 @@ class TraceEditorApp:
         self.selected_vertex_index = None
         self.refresh_layer_lists()
         self.draw_canvas()
-        self.status.set(f"{moved}개 accepted feature를 suggested로 되돌렸습니다.")
+        self.status.set(f"{moved}개 승인된 레이어를 AI 후보로 되돌렸습니다.")
 
     def draw_canvas(self) -> None:
         self.canvas.delete("all")
@@ -854,7 +1149,7 @@ class TraceEditorApp:
             self.canvas.create_image(self.pan_x, self.pan_y, image=self.background_image, anchor="nw")
         else:
             self.canvas.create_rectangle(0, 0, width, height, fill="#f7f3e8", outline="")
-            self.canvas.create_text(16, 16, anchor="nw", text="Naver Static Map 배경 또는 mock 배경", fill="#6b7280", font=("Malgun Gothic", 10))
+            self.canvas.create_text(16, 16, anchor="nw", text="네이버 지도 배경 또는 샘플 배경", fill="#6b7280", font=("Malgun Gothic", 10))
         paths = project_paths(Path(self.project_dir.get()))
         if paths["accepted"].exists():
             self.draw_geojson(read_json(paths["accepted"]), dashed=False)
@@ -1019,7 +1314,7 @@ class TraceEditorApp:
             self.draw_canvas()
             self.ai_trace_result.delete("1.0", "end")
             self.ai_trace_result.insert("end", safe_json(result))
-            self.status.set("AI Trace 결과를 suggested 후보로 가져왔습니다. 월드 생성에는 사용자가 승인한 accepted layer만 사용됩니다.")
+            self.status.set("AI 분석 결과를 AI 후보로 가져왔습니다. 월드 생성에는 사용자가 승인한 레이어만 사용됩니다.")
         except Exception as exc:
             write_boot_log("AI_TRACE_RESULT_IMPORT_FAIL", exc)
             messagebox.showerror("AI Trace 결과 가져오기 실패", str(exc))
@@ -1031,6 +1326,9 @@ class TraceEditorApp:
         if hasattr(self, "troubleshooting_result"):
             self.troubleshooting_result.delete("1.0", "end")
             self.troubleshooting_result.insert("end", safe_json(report))
+        if hasattr(self, "beginner_troubleshooting_result"):
+            self.beginner_troubleshooting_result.delete("1.0", "end")
+            self.beginner_troubleshooting_result.insert("end", safe_json(report))
 
     def open_reports_dir(self) -> None:
         open_path(project_paths(Path(self.project_dir.get()))["reports"])
@@ -1088,7 +1386,8 @@ class TraceEditorApp:
         paths = project_paths(Path(self.project_dir.get()))
         accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
         if not accepted.get("features"):
-            messagebox.showwarning("승인된 레이어 없음", "승인된 레이어가 없습니다. suggested 후보를 먼저 accepted로 승인하거나 직접 그려 저장하세요.")
+            messagebox.showwarning("승인된 레이어 없음", "승인된 레이어가 없습니다. 지도 만들기 단계에서 도로/건물/녹지 등을 승인해 주세요.")
+            self.update_final_wizard_statuses()
             return
         self.worldgen_button.configure(state="disabled")
         self.status.set("Arnis Writer로 월드 생성 중입니다.")
@@ -1123,11 +1422,20 @@ class TraceEditorApp:
         self.worldgen_button.configure(state="normal")
         if exc is not None:
             self.status.set("월드 생성 실패")
-            self.write_worldgen({"passed": False, "message": str(exc), "latest_log": str(LATEST_LOG)})
-            messagebox.showerror("월드 생성 실패", f"{exc}\n\n자세한 내용은 latest.log를 확인하세요.")
+            message = "월드 생성에 실패했습니다. 문제 해결 화면에서 로그를 확인하세요."
+            self.write_worldgen({"passed": False, "message": message, "detail": str(exc), "latest_log": str(LATEST_LOG)})
+            if hasattr(self, "wizard_export_result"):
+                self.wizard_export_result.delete("1.0", "end")
+                self.wizard_export_result.insert("end", safe_json({"passed": False, "message": message, "latest_log": str(LATEST_LOG)}))
+            self.update_final_wizard_statuses()
+            messagebox.showerror("월드 생성 실패", message)
             return
         self.status.set("월드 생성 완료")
         self.write_worldgen(report)
+        if hasattr(self, "wizard_export_result"):
+            self.wizard_export_result.delete("1.0", "end")
+            self.wizard_export_result.insert("end", safe_json(report))
+        self.update_final_wizard_statuses(worldgen_done=True)
         if hasattr(self, "final_result"):
             self.final_result.delete("1.0", "end")
             self.final_result.insert("end", safe_json(report))
@@ -1141,6 +1449,10 @@ class TraceEditorApp:
 
             target = copy_world_to_saves(self._world_dir(), Path(self.minecraft_saves_dir.get()), overwrite=self.overwrite_saves.get())
             self.write_worldgen({"copied_to_minecraft_saves": str(target), "copied_only_world_dir": True})
+            if hasattr(self, "wizard_export_result"):
+                self.wizard_export_result.delete("1.0", "end")
+                self.wizard_export_result.insert("end", safe_json({"copied_to_minecraft_saves": str(target), "copied_only_world_dir": True}))
+            self.update_final_wizard_statuses(saves_done=True)
         except Exception as exc:
             write_boot_log("COPY_WORLD_TO_SAVES_FAIL", exc)
             messagebox.showerror("복사 실패", str(exc))
@@ -1158,6 +1470,150 @@ def self_test_gui(safe_mode: bool = False) -> int:
     return 0
 
 
+def _visible_widget_texts(widget: object) -> list[str]:
+    texts: list[str] = []
+    try:
+        mapped = bool(widget.winfo_ismapped())  # type: ignore[attr-defined]
+    except Exception:
+        mapped = False
+    if mapped:
+        try:
+            text = widget.cget("text")  # type: ignore[attr-defined]
+            if text:
+                texts.append(str(text))
+        except Exception:
+            pass
+    try:
+        children = widget.winfo_children()  # type: ignore[attr-defined]
+    except Exception:
+        children = []
+    for child in children:
+        texts.extend(_visible_widget_texts(child))
+    return texts
+
+
+def self_test_simple_wizard() -> int:
+    write_boot_log("SIMPLE_WIZARD_SELF_TEST_START")
+    root = Tk()
+    app = TraceEditorApp(root, safe_mode=True)
+    root.update()
+    if app.current_step.get() != "start":
+        raise RuntimeError("default step is not start")
+    if app.advanced_host.winfo_ismapped():
+        raise RuntimeError("advanced settings are visible in beginner mode")
+    visible = "\n".join(_visible_widget_texts(root)).lower()
+    required = [
+        "1. 시작하기",
+        "2. 지도 만들기",
+        "3. 마인크래프트로 내보내기",
+        "새 지도 만들기",
+        "기존 프로젝트 열기",
+        "최근 프로젝트",
+        "도움말",
+        "네이버 api 키 상태",
+        "api 키 설정",
+        "로그",
+        "문제 해결",
+    ]
+    missing = [term for term in required if term.lower() not in visible]
+    if missing:
+        root.destroy()
+        raise RuntimeError(f"required beginner UI text missing: {missing}")
+    forbidden = [
+        "source policy",
+        "synthetic osm",
+        "debug",
+        "reports",
+        "schema",
+        "artifact",
+        "renderer",
+        "cli",
+        "ai worker",
+        "paper",
+        "dev-tools",
+        "threshold",
+        "api 키 테스트",
+        "검사 결과",
+        "월드 생성 엔진",
+        "마인크래프트 호환성 검사",
+    ]
+    leaked = [term for term in forbidden if term in visible]
+    original_showinfo = messagebox.showinfo
+    try:
+        messagebox.showinfo = lambda *_args, **_kwargs: "ok"  # type: ignore[assignment]
+        app.show_beginner_help()
+        root.update()
+        if app.advanced_host.winfo_ismapped():
+            root.destroy()
+            raise RuntimeError("beginner help opened advanced settings")
+    finally:
+        messagebox.showinfo = original_showinfo  # type: ignore[assignment]
+    app.open_api_settings()
+    root.update()
+    if app.advanced_host.winfo_ismapped():
+        root.destroy()
+        raise RuntimeError("API key settings opened advanced settings")
+    if app.api_settings_window is None or not app.api_settings_window.winfo_exists():
+        root.destroy()
+        raise RuntimeError("API key settings dialog did not open")
+    app.api_settings_window.destroy()
+    app.open_troubleshooting()
+    root.update()
+    if app.advanced_host.winfo_ismapped():
+        root.destroy()
+        raise RuntimeError("troubleshooting opened advanced settings")
+    if app.troubleshooting_window is None or not app.troubleshooting_window.winfo_exists():
+        root.destroy()
+        raise RuntimeError("troubleshooting dialog did not open")
+    app.troubleshooting_window.destroy()
+    root.destroy()
+    if leaked:
+        raise RuntimeError(f"advanced terms visible in default UI: {leaked}")
+    write_boot_log("SIMPLE_WIZARD_SELF_TEST_PASS")
+    print("SIMPLE_WIZARD_SELF_TEST=PASS")
+    return 0
+
+
+def self_test_advanced_mode() -> int:
+    write_boot_log("ADVANCED_MODE_SELF_TEST_START")
+    root = Tk()
+    app = TraceEditorApp(root, safe_mode=True)
+    root.update()
+    app.open_advanced_settings()
+    root.update()
+    if not app.advanced_host.winfo_ismapped():
+        raise RuntimeError("advanced settings did not open")
+    app.close_advanced_settings()
+    root.update()
+    if app.advanced_host.winfo_ismapped() or not app.simple_shell.winfo_ismapped():
+        raise RuntimeError("beginner mode did not restore")
+    root.destroy()
+    write_boot_log("ADVANCED_MODE_SELF_TEST_PASS")
+    print("ADVANCED_MODE_SELF_TEST=PASS")
+    return 0
+
+
+def self_test_beginner_flow() -> int:
+    write_boot_log("BEGINNER_FLOW_SELF_TEST_START")
+    root = Tk()
+    app = TraceEditorApp(root, safe_mode=True)
+    root.update()
+    for step in ["start", "map", "export"]:
+        app.show_wizard_step(step)
+        root.update()
+        if app.current_step.get() != step:
+            raise RuntimeError(f"wizard step failed: {step}")
+    if app.api_key_status.get() != "미설정":
+        raise RuntimeError("safe-mode API status should be missing")
+    app.update_final_wizard_statuses()
+    if app.wizard_status_vars["layers"].get() != "필요함":
+        raise RuntimeError("empty project should require approved layers")
+    root.destroy()
+    write_boot_log("BEGINNER_FLOW_SELF_TEST_PASS")
+    print("BEGINNER_FLOW_SELF_TEST=PASS")
+    return 0
+
+
 def show_startup_error() -> None:
     message = f"Arnis Korea를 시작하지 못했습니다. 자세한 내용은 {LATEST_LOG} 를 확인하세요."
     try:
@@ -1172,6 +1628,9 @@ def show_startup_error() -> None:
 def run_app(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test-gui", action="store_true")
+    parser.add_argument("--self-test-simple-wizard", action="store_true")
+    parser.add_argument("--self-test-beginner-flow", action="store_true")
+    parser.add_argument("--self-test-advanced-mode", action="store_true")
     parser.add_argument("--safe-mode", action="store_true")
     args = parser.parse_args(argv)
     if CORE_IMPORT_ERROR is not None:
@@ -1182,6 +1641,12 @@ def run_app(argv: list[str] | None = None) -> int:
         raise RuntimeError("GUI core import failed") from CORE_IMPORT_ERROR
     if args.self_test_gui:
         return self_test_gui(safe_mode=args.safe_mode)
+    if args.self_test_simple_wizard:
+        return self_test_simple_wizard()
+    if args.self_test_beginner_flow:
+        return self_test_beginner_flow()
+    if args.self_test_advanced_mode:
+        return self_test_advanced_mode()
     write_boot_log(f"GUI_BOOT_START safe_mode={args.safe_mode}")
     root = Tk()
     TraceEditorApp(root, safe_mode=args.safe_mode)

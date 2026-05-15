@@ -15,7 +15,7 @@ from arnis_korea_detailed.static_map_request_planner import split_static_map_req
 
 SCHEMA_VERSION = "arnis-korea.trace-editor.project.v2.0"
 LAYER_SCHEMA_VERSION = "arnis-korea.trace-layer.v2.0"
-VERSION = "2.0.0-private-final"
+VERSION = "2.0.1-simple-ux"
 HUFS_BBOX = {"min_lat": 37.5955, "min_lng": 127.0555, "max_lat": 37.5985, "max_lng": 127.0620}
 LAYER_KINDS = {"road", "building", "water", "green", "rail", "spawn"}
 ACCEPTED_SOURCE = "user_approved"

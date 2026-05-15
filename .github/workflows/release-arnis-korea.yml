@@ -1,4 +1,4 @@
-name: Build Arnis Korea private-final v2.0 Windows Artifact
+name: Build Arnis Korea simple UX v2.0.1 Windows Artifact
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - "arnis-korea-v*"
 
 env:
-  ARTIFACT_NAME: arnis-korea-2.0.0-private-final-windows_x86_64
+  ARTIFACT_NAME: arnis-korea-2.0.1-simple-ux-windows_x86_64
   PYTHONPATH: src
 
 permissions:
@@ -51,6 +51,9 @@ jobs:
           python -m arnis_korea_detailed.trace_worldgen self-test --output-dir smoke
           python scripts\arnis_korea_gui.py --self-test-gui
           python scripts\arnis_korea_gui.py --safe-mode --self-test-gui
+          python scripts\arnis_korea_gui.py --self-test-simple-wizard
+          python scripts\arnis_korea_gui.py --self-test-beginner-flow
+          python scripts\arnis_korea_gui.py --self-test-advanced-mode
           pyinstaller --clean --onefile --windowed --name arnis-korea --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.trace_worldgen --hidden-import arnis_korea_detailed.arnis_no_network_renderer --hidden-import arnis_korea_detailed.minecraft_world_validator --hidden-import arnis_korea_detailed.minecraft_load_smoke --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
           pyinstaller --clean --onefile --console --name arnis-korea-debug --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.trace_worldgen --hidden-import arnis_korea_detailed.arnis_no_network_renderer --hidden-import arnis_korea_detailed.minecraft_world_validator --hidden-import arnis_korea_detailed.minecraft_load_smoke --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
           pyinstaller --clean --onefile --name arnis-korea-cli --paths src src\arnis_korea_detailed\trace_editor_core.py
@@ -87,7 +90,7 @@ jobs:
           $policy = Get-Content "$project\reports\source-policy-report.json" -Raw | ConvertFrom-Json
           if ($policy.passed -ne $true) { throw "source policy failed" }
 
-      - name: Private-final v2.0 full user-flow QA
+      - name: Simple UX v2.0.1 full user-flow QA
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -132,6 +135,8 @@ jobs:
           Copy-Item sample_bbox_hufs.json package\examples\
           Copy-Item web\dynamic_selector.html package\examples\dynamic_selector.html
           if (Test-Path package\arnis-korea-cli.exe) { throw "CLI exe must not be artifact root" }
+          $rootExes = @(Get-ChildItem package -File -Filter "*.exe" | ForEach-Object { $_.Name })
+          if ($rootExes.Count -ne 1 -or $rootExes[0] -ne "arnis-korea.exe") { throw "artifact root must expose only arnis-korea.exe; found: $($rootExes -join ', ')" }
           Get-ChildItem package -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
           if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found at artifact root" }
 
@@ -157,6 +162,9 @@ jobs:
           }
           Invoke-GuiSmoke ".\package\arnis-korea.exe" "--self-test-gui"
           Invoke-GuiSmoke ".\package\arnis-korea.exe" "--safe-mode --self-test-gui"
+          Invoke-GuiSmoke ".\package\arnis-korea.exe" "--self-test-simple-wizard"
+          Invoke-GuiSmoke ".\package\arnis-korea.exe" "--self-test-beginner-flow"
+          Invoke-GuiSmoke ".\package\arnis-korea.exe" "--self-test-advanced-mode"
           Invoke-GuiSmoke ".\package\dev-tools\arnis-korea-debug.exe" "--self-test-gui"
 
       - name: Source and artifact policy scans
@@ -194,8 +202,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-2.0.0-private-final-windows_x86_64
+          name: arnis-korea-2.0.1-simple-ux-windows_x86_64
           path: |
-            arnis-korea-2.0.0-private-final-windows_x86_64.zip
+            arnis-korea-2.0.1-simple-ux-windows_x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt
