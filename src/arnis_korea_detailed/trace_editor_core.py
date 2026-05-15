@@ -6,15 +6,16 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
 from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
 
-SCHEMA_VERSION = "arnis-korea.trace-editor.project.v1.1"
-LAYER_SCHEMA_VERSION = "arnis-korea.trace-layer.v1.1"
-VERSION = "1.1.0"
+SCHEMA_VERSION = "arnis-korea.trace-editor.project.v2.0"
+LAYER_SCHEMA_VERSION = "arnis-korea.trace-layer.v2.0"
+VERSION = "2.0.0-private-final"
 HUFS_BBOX = {"min_lat": 37.5955, "min_lng": 127.0555, "max_lat": 37.5985, "max_lng": 127.0620}
 LAYER_KINDS = {"road", "building", "water", "green", "rail", "spawn"}
 ACCEPTED_SOURCE = "user_approved"
@@ -224,7 +225,7 @@ def export_synthetic_osm_preview(project_dir: Path) -> dict[str, Any]:
                 "geometry": item.get("geometry", {}),
             }
         )
-    output = {"schema_version": "arnis-korea.synthetic-osm-preview.v1.1", "world_generation": "enabled_in_v1.1_after_accepted_export", "elements": elements}
+    output = {"schema_version": "arnis-korea.synthetic-osm-preview.v2.0", "world_generation": "enabled_private_final_v2_after_accepted_export", "elements": elements}
     write_json(paths["synthetic"], output)
     return output
 
@@ -608,6 +609,67 @@ def write_mock_raster(path: Path, width: int = 96, height: int = 96) -> Path:
     return path
 
 
+def export_ai_trace_package(project_dir: Path, destination_dir: Path) -> dict[str, Any]:
+    project_dir = Path(project_dir)
+    destination_dir = Path(destination_dir)
+    paths = project_paths(project_dir)
+    project = load_project(project_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    package_project = {
+        "schema_version": "arnis-korea.ai-trace-package.v2.0",
+        "project_name": project.get("project_name", ""),
+        "bbox": project.get("bbox", {}),
+        "spawn_point": project.get("spawn_point", {}),
+        "source_policy": {
+            "source_policy": "naver_trace_editor_ai_trace_package",
+            "contains_secret": False,
+            "official_naver_static_map_raster_only": True,
+            "unofficial_naver_scraping_used": False,
+        },
+    }
+    write_json(destination_dir / "project.arniskorea.json", package_project)
+    copied: list[str] = []
+    for rel in project.get("raster_files", []):
+        source = project_dir / rel
+        if source.is_file() and source.suffix.lower() in {".png", ".ppm"}:
+            target = destination_dir / source.name
+            shutil.copy2(source, target)
+            copied.append(target.name)
+            if target.suffix.lower() == ".png" and target.name != "raster.png":
+                shutil.copy2(source, destination_dir / "raster.png")
+    mock = paths["previews"] / "mock_background.ppm"
+    if not copied and mock.is_file():
+        shutil.copy2(mock, destination_dir / "mock_background.ppm")
+        copied.append("mock_background.ppm")
+    if not copied:
+        raise FileNotFoundError("AI Trace package에 넣을 raster가 없습니다.")
+    manifest = {"schema_version": "arnis-korea.ai-trace-package-manifest.v2.0", "raster_files": copied, "contains_secret": False}
+    write_json(destination_dir / "ai_trace_package_manifest.json", manifest)
+    return manifest
+
+
+def import_ai_trace_results(project_dir: Path, results_dir: Path) -> dict[str, Any]:
+    project_dir = Path(project_dir)
+    results_dir = Path(results_dir)
+    paths = project_paths(project_dir)
+    suggested = ensure_feature_ids(read_json(paths["suggested"]) if paths["suggested"].exists() else empty_feature_collection())
+    imported = 0
+    for name in ("suggested_layers.geojson", "auto_accepted_layers.geojson"):
+        path = results_dir / name
+        if not path.exists():
+            continue
+        data = ensure_feature_ids(read_json(path))
+        for item in data.get("features", []):
+            props = item.setdefault("properties", {})
+            props["approved_by_user"] = False
+            props["source"] = "ai_trace_candidate"
+            props["imported_from_ai_trace"] = True
+            suggested.setdefault("features", []).append(item)
+            imported += 1
+    write_json(paths["suggested"], suggested)
+    return {"imported_features": imported, "target": "suggested_layers.geojson", "accepted_layers_modified": False}
+
+
 def run_self_test(base_dir: Path) -> dict[str, Any]:
     project_dir = base_dir / "trace-editor-self-test"
     create_project(project_dir, "HUFS Trace Editor Mock", HUFS_BBOX)
@@ -660,7 +722,7 @@ def run_self_test(base_dir: Path) -> dict[str, Any]:
         "ACCEPTED_LAYER_SCHEMA": "PASS" if layer_validation["accepted"]["passed"] else "FAIL",
         "ACCEPTED_LAYERS_EXPORT": "PASS",
         "SYNTHETIC_OSM_PREVIEW_EXPORT": "PASS",
-        "SYNTHETIC_OSM_PREVIEW_SCHEMA": "PASS" if read_json(project_paths(project_dir)["synthetic"]).get("schema_version") == "arnis-korea.synthetic-osm-preview.v1.1" else "FAIL",
+        "SYNTHETIC_OSM_PREVIEW_SCHEMA": "PASS" if read_json(project_paths(project_dir)["synthetic"]).get("schema_version") == "arnis-korea.synthetic-osm-preview.v2.0" else "FAIL",
         "LAYER_VALIDATION_REPORT": "PASS",
         "SOURCE_POLICY": "PASS" if validation["checks"]["source_policy_pass"] else "FAIL",
         "project_dir": str(project_dir),
@@ -707,6 +769,12 @@ def main() -> int:
     approve.add_argument("--index", type=int, action="append")
     export = sub.add_parser("export")
     export.add_argument("--project-dir", required=True)
+    ai_pkg = sub.add_parser("export-ai-package")
+    ai_pkg.add_argument("--project-dir", required=True)
+    ai_pkg.add_argument("--destination-dir", required=True)
+    ai_import = sub.add_parser("import-ai-results")
+    ai_import.add_argument("--project-dir", required=True)
+    ai_import.add_argument("--results-dir", required=True)
     export_osm = sub.add_parser("export-synthetic-osm")
     export_osm.add_argument("--project-dir", required=True)
     worldgen = sub.add_parser("generate-world")
@@ -734,6 +802,10 @@ def main() -> int:
         project_dir = Path(args.project_dir)
         export_accepted_layers(project_dir)
         print(json.dumps(export_synthetic_osm_preview(project_dir), ensure_ascii=False, indent=2))
+    elif args.command == "export-ai-package":
+        print(json.dumps(export_ai_trace_package(Path(args.project_dir), Path(args.destination_dir)), ensure_ascii=False, indent=2))
+    elif args.command == "import-ai-results":
+        print(json.dumps(import_ai_trace_results(Path(args.project_dir), Path(args.results_dir)), ensure_ascii=False, indent=2))
     elif args.command == "export-synthetic-osm":
         from arnis_korea_detailed.trace_worldgen import export_synthetic_osm
 

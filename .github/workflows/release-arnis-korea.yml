@@ -1,4 +1,4 @@
-name: Build Arnis Korea v1.1 Windows Artifact
+name: Build Arnis Korea private-final v2.0 Windows Artifact
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - "arnis-korea-v*"
 
 env:
-  ARTIFACT_NAME: arnis-korea-1.1.0-windows_x86_64
+  ARTIFACT_NAME: arnis-korea-2.0.0-private-final-windows_x86_64
   PYTHONPATH: src
 
 permissions:
@@ -54,9 +54,11 @@ jobs:
           pyinstaller --clean --onefile --windowed --name arnis-korea --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.trace_worldgen --hidden-import arnis_korea_detailed.arnis_no_network_renderer --hidden-import arnis_korea_detailed.minecraft_world_validator --hidden-import arnis_korea_detailed.minecraft_load_smoke --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
           pyinstaller --clean --onefile --console --name arnis-korea-debug --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.trace_worldgen --hidden-import arnis_korea_detailed.arnis_no_network_renderer --hidden-import arnis_korea_detailed.minecraft_world_validator --hidden-import arnis_korea_detailed.minecraft_load_smoke --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
           pyinstaller --clean --onefile --name arnis-korea-cli --paths src src\arnis_korea_detailed\trace_editor_core.py
+          pyinstaller --clean --onefile --console --name arnis-korea-ai-trace-worker --paths src scripts\ai_trace_worker.py
           if (-not (Test-Path dist\arnis-korea.exe)) { throw "missing GUI exe" }
           if (-not (Test-Path dist\arnis-korea-debug.exe)) { throw "missing debug GUI exe" }
           if (-not (Test-Path dist\arnis-korea-cli.exe)) { throw "missing dev CLI exe" }
+          if (-not (Test-Path dist\arnis-korea-ai-trace-worker.exe)) { throw "missing AI Trace worker exe" }
 
       - name: Trace editor QA
         shell: pwsh
@@ -81,17 +83,17 @@ jobs:
             if ($feature.properties.approved_by_user -ne $true) { throw "unapproved accepted feature" }
           }
           $synthetic = Get-Content "$project\synthetic_osm_preview.json" -Raw | ConvertFrom-Json
-          if ($synthetic.world_generation -ne "enabled_in_v1.1_after_accepted_export") { throw "worldgen policy missing" }
+          if ($synthetic.world_generation -ne "enabled_private_final_v2_after_accepted_export") { throw "worldgen policy missing" }
           $policy = Get-Content "$project\reports\source-policy-report.json" -Raw | ConvertFrom-Json
           if ($policy.passed -ne $true) { throw "source policy failed" }
 
-      - name: Arnis Writer v1.1 QA
+      - name: Private-final v2.0 full user-flow QA
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          python -m arnis_korea_detailed.trace_worldgen self-test --output-dir smoke\worldgen --root . --renderer --load-smoke | Tee-Object -FilePath worldgen-self-test.json
-          $summary = Get-Content worldgen-self-test.json -Raw | ConvertFrom-Json
-          foreach ($key in @("SYNTHETIC_OSM_EXPORT","SYNTHETIC_OSM_SCHEMA","SOURCE_POLICY_V11","ARNIS_NO_NETWORK_WORLDGEN","CLEAN_WORLD_LAYOUT","PAPER_26_1_2_LOAD_SMOKE")) {
+          python -m arnis_korea_detailed.trace_worldgen final-qa --output-dir smoke\final --root . --renderer --load-smoke | Tee-Object -FilePath final-qa-summary.json
+          $summary = Get-Content final-qa-summary.json -Raw | ConvertFrom-Json
+          foreach ($key in @("APP_SELF_TEST","MOCK_PROJECT_CREATE","MOCK_PROJECT_LOAD","MOCK_RASTER_LOAD","ROAD_EDIT","RAIL_EDIT","BUILDING_EDIT","WATER_EDIT","GREEN_EDIT","SPAWN_EDIT","POINT_ADD_MOVE_DELETE","FEATURE_SELECT_MOVE_DELETE","UNDO_REDO","FEATURE_NAME_MEMO_CLASS_EDIT","SUGGESTED_TO_ACCEPTED","ACCEPTED_TO_SUGGESTED","ACCEPTED_LAYERS_EXPORT","SUGGESTED_LAYERS_EXPORT","SYNTHETIC_OSM_EXPORT","SYNTHETIC_OSM_PREVIEW_EXPORT","LAYER_VALIDATION_REPORT","SYNTHETIC_OSM_EXPORT_REPORT","ID_UNIQUE","WAY_NODE_REFS_VALID","POLYGONS_CLOSED","BBOX_BOUNDS_VALID","EMPTY_ACCEPTED_WORLDGEN_BLOCK","SOURCE_POLICY","SUGGESTED_NOT_USED_FOR_WORLDGEN","AI_TRACE_PACKAGE_EXPORT","AI_TRACE_WORKER","AI_TRACE_SCHEMA","AI_TRACE_NO_WINDOWS_INTERNAL_MODEL","ARNIS_NO_NETWORK_WORLDGEN","CLEAN_WORLD_LAYOUT","WORLD_VALIDATION","PAPER_26_1_2_LOAD_SMOKE","MINECRAFT_SAVES_COPY","PLAYABLE_WORLD_ONLY_COPY")) {
             if ($summary.$key -ne "PASS") {
               $project = $summary.project_dir
               if ($project -and (Test-Path "$project\reports\minecraft-load-smoke.json")) { Get-Content "$project\reports\minecraft-load-smoke.json" -Raw }
@@ -120,6 +122,7 @@ jobs:
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
           Copy-Item dist\arnis-korea-debug.exe package\dev-tools\arnis-korea-debug.exe
           Copy-Item dist\arnis-korea-cli.exe package\dev-tools\arnis-korea-cli.exe
+          Copy-Item dist\arnis-korea-ai-trace-worker.exe package\dev-tools\arnis-korea-ai-trace-worker.exe
           Copy-Item upstream\arnis\target\release\arnis.exe package\dev-tools\arnis-korea-renderer.exe
           Copy-Item README.md package\
           Copy-Item WINDOWS_QUICKSTART.md package\
@@ -191,8 +194,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-1.1.0-windows_x86_64
+          name: arnis-korea-2.0.0-private-final-windows_x86_64
           path: |
-            arnis-korea-1.1.0-windows_x86_64.zip
+            arnis-korea-2.0.0-private-final-windows_x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt

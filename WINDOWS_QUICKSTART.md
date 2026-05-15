@@ -2,47 +2,35 @@
 
 ## 실행
 
-1. GitHub Actions artifact `arnis-korea-1.1.0-windows_x86_64`를 내려받습니다.
+1. Actions artifact `arnis-korea-2.0.0-private-final-windows_x86_64`를 내려받습니다.
 2. zip을 풉니다.
-3. `arnis-korea.exe`를 실행합니다.
+3. `arnis-korea.exe`를 더블클릭합니다.
 
-일반 사용자는 root의 `arnis-korea.exe`만 사용합니다. 개발 진단용 실행 파일은 `dev-tools/` 아래에만 있습니다.
+## 기본 흐름
+
+1. `프로젝트` 탭에서 새 프로젝트를 만듭니다.
+2. `네이버 API` 탭에서 Client ID/Secret을 저장하고 테스트합니다.
+3. `지도 범위` 탭에서 bbox와 스폰포인트를 정합니다.
+4. `네이버 API` 탭에서 Static Map 배경을 다운로드합니다. 저장/분석 동의가 필요합니다.
+5. `레이어 편집` 탭에서 도로/건물/수역/녹지/철도/스폰포인트를 그립니다.
+6. suggested 후보는 직접 확인한 뒤 승인해야 accepted layer가 됩니다.
+7. `최종 생성 마법사` 탭에서 프로젝트 상태 체크, synthetic OSM 생성, 월드 생성을 순서대로 실행합니다.
+8. `playable_world/<world_name>`만 Minecraft saves로 복사합니다.
 
 ## 앱이 안 열릴 때
 
-1. `dev-tools\arnis-korea-debug.exe`를 실행해 콘솔 오류를 확인합니다.
-2. `%APPDATA%\ArnisKorea\logs\latest.log` 파일을 확인합니다.
-3. `arnis-korea.exe --safe-mode`로 안전 모드를 실행합니다.
+1. `dev-tools\arnis-korea-debug.exe`를 실행합니다.
+2. `%APPDATA%\ArnisKorea\logs\latest.log`를 확인합니다.
+3. `arnis-korea.exe --safe-mode`를 실행합니다.
 
-오류 내용을 개인 기록이나 이슈에 붙여넣기 전에 Naver Client ID, Client Secret 같은 키 원문이 포함되어 있지 않은지 확인하세요.
+로그나 이슈 내용 공유 전 Naver 키 원문이 들어 있지 않은지 확인하세요.
 
-로그 위치:
+## 제한
 
-```text
-%APPDATA%\ArnisKorea\logs\latest.log
-```
+- 개인 개발용이며 공개 배포용이 아닙니다.
+- 네이버 공식 API 무료 사용량 범위 안에서 사용하세요.
+- 월드 생성 품질은 accepted layer trace 품질에 좌우됩니다.
 
-## 기본 작업 흐름
+## AI Trace Worker
 
-1. `프로젝트` 탭에서 프로젝트 폴더와 이름을 지정하고 `새 프로젝트`를 누릅니다.
-2. `네이버 API` 탭에서 Client ID와 Client Secret을 입력하고 저장합니다.
-3. `지도 범위` 탭에서 bbox와 스폰포인트를 확인합니다.
-4. `레이어 편집` 탭에서 레이어를 직접 그리거나 suggested 후보를 승인합니다.
-5. `내보내기` 탭에서 `accepted_layers.geojson`과 `synthetic_osm.json`을 생성합니다.
-6. `월드 생성` 탭에서 월드 이름, roof/interior/scale 옵션을 확인하고 `월드 생성`을 누릅니다.
-7. 생성된 `project_dir\playable_world\<world_name>`만 Minecraft saves로 복사합니다.
-
-## v1.1 월드 생성 원칙
-
-- 월드 생성 입력은 accepted layer only입니다.
-- suggested 후보만 있고 accepted feature가 없으면 월드 생성 버튼은 비활성 또는 오류 상태가 됩니다.
-- Arnis Writer는 no-network 모드로 실행됩니다.
-- Paper 26.1.2 load smoke를 통과한 월드만 release gate를 통과합니다.
-
-## 키 저장 위치
-
-```text
-%APPDATA%\ArnisKorea\secrets.json
-```
-
-이 파일은 artifact와 프로젝트 폴더에 포함되지 않습니다.
+AI Trace는 Windows EXE 내부 모델이 아니라 OCI 내부 worker 또는 dev-tools CLI로 실행합니다. GUI는 분석 패키지를 내보내고 결과를 suggested 후보로 가져옵니다. 사용자가 승인한 accepted layer만 월드 생성에 사용됩니다.

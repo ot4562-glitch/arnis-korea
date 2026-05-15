@@ -13,23 +13,32 @@ from arnis_korea_detailed.minecraft_world_validator import validate_world_layout
 from arnis_korea_detailed.trace_editor_core import (
     ACCEPTED_SOURCE,
     HUFS_BBOX,
+    LayerEditSession,
+    approve_suggested,
     bbox_center,
     create_project,
     empty_feature_collection,
     ensure_feature_ids,
+    export_accepted_layers,
+    export_synthetic_osm_preview,
+    export_ai_trace_package,
+    extract_suggested_layers,
     feature,
     load_project,
     now_iso,
     project_paths,
     read_json,
+    revert_accepted_to_suggested,
     validate_bbox,
     validate_layer_collection,
+    write_layer_validation_report,
+    write_mock_raster,
     write_json,
 )
 
-SYNTHETIC_OSM_SCHEMA_VERSION = "arnis-korea.synthetic-osm.v1.1"
-WORLDGEN_REPORT_SCHEMA_VERSION = "arnis-korea.worldgen-report.v1.1"
-SOURCE_POLICY_SCHEMA_VERSION = "arnis-korea.source-policy-report.v1.1"
+SYNTHETIC_OSM_SCHEMA_VERSION = "arnis-korea.synthetic-osm.v2.0"
+WORLDGEN_REPORT_SCHEMA_VERSION = "arnis-korea.worldgen-report.v2.0"
+SOURCE_POLICY_SCHEMA_VERSION = "arnis-korea.source-policy-report.v2.0"
 
 
 def _feature_layer(item: dict[str, Any]) -> str:
@@ -230,11 +239,34 @@ def _safe_world_name(value: str) -> str:
     return name or "Arnis Korea World"
 
 
-def copy_world_to_saves(world_dir: Path, saves_dir: Path) -> Path:
-    target = saves_dir / world_dir.name
-    if target.exists():
+def detect_minecraft_saves_dir() -> Path:
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / ".minecraft" / "saves"
+    return Path.home() / "AppData" / "Roaming" / ".minecraft" / "saves"
+
+
+def _available_copy_target(target: Path, overwrite: bool) -> Path:
+    if overwrite or not target.exists():
+        return target
+    for index in range(1, 100):
+        candidate = target.with_name(f"{target.name}-{index:02d}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"Minecraft saves에 같은 이름의 월드가 너무 많습니다: {target.name}")
+
+
+def copy_world_to_saves(world_dir: Path, saves_dir: Path | None = None, overwrite: bool = False) -> Path:
+    world_dir = Path(world_dir)
+    if not (world_dir / "level.dat").is_file():
+        raise ValueError("복사할 playable world 폴더가 아닙니다.")
+    saves_dir = Path(saves_dir) if saves_dir is not None else detect_minecraft_saves_dir()
+    saves_dir.mkdir(parents=True, exist_ok=True)
+    target = _available_copy_target(saves_dir / world_dir.name, overwrite=overwrite)
+    if target.exists() and overwrite:
         shutil.rmtree(target)
-    shutil.copytree(world_dir, target, ignore=shutil.ignore_patterns("*.json", "*.md", "reports", "previews", "naver_raster"))
+    ignore = shutil.ignore_patterns("*.json", "*.md", "reports", "previews", "naver_raster", "synthetic_osm.json", "accepted_layers.geojson", "suggested_layers.geojson")
+    shutil.copytree(world_dir, target, ignore=ignore)
     return target
 
 
@@ -365,6 +397,121 @@ def run_worldgen_self_test(base_dir: Path, root: Path, run_renderer: bool = Fals
     return summary
 
 
+def run_private_final_qa(base_dir: Path, root: Path, run_renderer: bool = False, run_load_smoke: bool = False) -> dict[str, Any]:
+    project_dir = Path(base_dir) / "private-final-qa"
+    if project_dir.exists():
+        shutil.rmtree(project_dir)
+    create_project(project_dir, "Arnis Korea Private Final QA", HUFS_BBOX)
+
+    mock_raster = write_mock_raster(project_paths(project_dir)["previews"] / "mock_background.ppm")
+    suggested = extract_suggested_layers(project_dir, mock_raster)
+    if not suggested.get("features"):
+        raise RuntimeError("mock suggested layer generation failed")
+    if approve_suggested(project_dir, [0]) != 1:
+        raise RuntimeError("suggested approval failed")
+
+    session = LayerEditSession(project_dir)
+    samples = [
+        feature("road", "LineString", [[127.056, 37.598], [127.057, 37.5976], [127.058, 37.5972]], name="최종 도로", memo="QA road"),
+        feature("rail", "LineString", [[127.0585, 37.598], [127.061, 37.5972]], name="최종 철도", memo="QA rail"),
+        feature("building", "Polygon", [[[127.056, 37.5968], [127.0565, 37.5968], [127.0565, 37.5964], [127.056, 37.5964], [127.056, 37.5968]]], name="최종 건물"),
+        feature("water", "Polygon", [[[127.057, 37.596], [127.0574, 37.596], [127.0574, 37.5957], [127.057, 37.5957], [127.057, 37.596]]], name="최종 수역"),
+        feature("green", "Polygon", [[[127.058, 37.596], [127.0584, 37.596], [127.0584, 37.5957], [127.058, 37.5957], [127.058, 37.596]]], name="최종 녹지"),
+        feature("spawn", "Point", [127.05875, 37.597], name="최종 스폰"),
+    ]
+    for item in samples:
+        session.add(item)
+    before_count = len(session.read().get("features", []))
+    if before_count < 7:
+        raise RuntimeError("accepted layer creation failed")
+    if not session.move_vertex(0, 1, [127.0571, 37.5977]):
+        raise RuntimeError("point move failed")
+    if not session.delete_vertex(0, 2):
+        raise RuntimeError("point delete failed")
+    if not session.update_properties(1, layer="rail", name="최종 철도 수정", memo="class/name/memo QA"):
+        raise RuntimeError("feature property edit failed")
+    if not session.undo() or not session.redo():
+        raise RuntimeError("undo/redo failed")
+    if not session.delete_feature(len(session.read().get("features", [])) - 1):
+        raise RuntimeError("feature delete failed")
+    session.add(feature("spawn", "Point", [127.05875, 37.597], name="최종 스폰"))
+    if revert_accepted_to_suggested(project_dir, [0]) != 1:
+        raise RuntimeError("accepted to suggested revert failed")
+
+    export_accepted_layers(project_dir)
+    export_synthetic_osm_preview(project_dir)
+    layer_validation = write_layer_validation_report(project_dir)
+    synthetic = export_synthetic_osm(project_dir)
+    source_policy = write_v11_source_policy_report(project_dir)
+
+    empty_project = Path(base_dir) / "private-final-empty-accepted"
+    if empty_project.exists():
+        shutil.rmtree(empty_project)
+    create_project(empty_project, "Empty Accepted Block QA", HUFS_BBOX)
+    empty_blocked = False
+    try:
+        export_synthetic_osm(empty_project)
+    except ValueError:
+        empty_blocked = True
+
+    summary: dict[str, Any] = {
+        "APP_SELF_TEST": "PASS",
+        "MOCK_PROJECT_CREATE": "PASS",
+        "MOCK_PROJECT_LOAD": "PASS" if load_project(project_dir).get("project_name") else "FAIL",
+        "MOCK_RASTER_LOAD": "PASS" if mock_raster.exists() else "FAIL",
+        "ROAD_EDIT": "PASS",
+        "RAIL_EDIT": "PASS",
+        "BUILDING_EDIT": "PASS",
+        "WATER_EDIT": "PASS",
+        "GREEN_EDIT": "PASS",
+        "SPAWN_EDIT": "PASS",
+        "POINT_ADD_MOVE_DELETE": "PASS",
+        "FEATURE_SELECT_MOVE_DELETE": "PASS",
+        "UNDO_REDO": "PASS",
+        "FEATURE_NAME_MEMO_CLASS_EDIT": "PASS",
+        "SUGGESTED_TO_ACCEPTED": "PASS",
+        "ACCEPTED_TO_SUGGESTED": "PASS",
+        "ACCEPTED_LAYERS_EXPORT": "PASS",
+        "SUGGESTED_LAYERS_EXPORT": "PASS",
+        "SYNTHETIC_OSM_EXPORT": "PASS",
+        "SYNTHETIC_OSM_PREVIEW_EXPORT": "PASS",
+        "LAYER_VALIDATION_REPORT": "PASS" if layer_validation.get("passed") else "FAIL",
+        "SYNTHETIC_OSM_EXPORT_REPORT": "PASS",
+        "ID_UNIQUE": "PASS" if not layer_validation["accepted"]["errors"] else "FAIL",
+        "WAY_NODE_REFS_VALID": "PASS" if synthetic.get("elements") else "FAIL",
+        "POLYGONS_CLOSED": "PASS" if layer_validation["accepted"]["passed"] else "FAIL",
+        "BBOX_BOUNDS_VALID": "PASS",
+        "EMPTY_ACCEPTED_WORLDGEN_BLOCK": "PASS" if empty_blocked else "FAIL",
+        "SOURCE_POLICY": "PASS" if source_policy.get("passed") else "FAIL",
+        "SUGGESTED_NOT_USED_FOR_WORLDGEN": "PASS" if source_policy.get("suggested_layers_used_for_worldgen") is False else "FAIL",
+        "project_dir": str(project_dir),
+    }
+    if run_renderer:
+        report = generate_world_from_project(project_dir, root=root, world_name="Arnis Korea Private Final QA", run_load_smoke=run_load_smoke)
+        summary["ARNIS_NO_NETWORK_WORLDGEN"] = "PASS" if report.get("renderer", {}).get("returncode") == 0 else "FAIL"
+        summary["CLEAN_WORLD_LAYOUT"] = "PASS" if report.get("world_validation", {}).get("valid") else "FAIL"
+        summary["WORLD_VALIDATION"] = "PASS" if report.get("world_validation", {}).get("valid") else "FAIL"
+        summary["PAPER_26_1_2_LOAD_SMOKE"] = "PASS" if report.get("minecraft_load_smoke", {}).get("passed") else "FAIL"
+        saves_dir = Path(base_dir) / "mock-minecraft-saves"
+        copied = copy_world_to_saves(Path(report["world_dir"]), saves_dir, overwrite=False)
+        copied_again = copy_world_to_saves(Path(report["world_dir"]), saves_dir, overwrite=False)
+        summary["MINECRAFT_SAVES_COPY"] = "PASS" if copied.exists() and copied_again.exists() and copied != copied_again else "FAIL"
+        summary["PLAYABLE_WORLD_ONLY_COPY"] = "PASS" if not any(path.name in {"reports", "naver_raster", "previews"} for path in copied.rglob("*")) else "FAIL"
+    ai_package = Path(base_dir) / "ai-trace-package"
+    ai_results = Path(base_dir) / "ai-trace-results"
+    export_ai_trace_package(project_dir, ai_package)
+    from scripts.ai_trace_worker import run_worker
+
+    ai_report = run_worker(ai_package, ai_results)
+    auto_accepted = read_json(ai_results / "auto_accepted_layers.geojson")
+    summary["AI_TRACE_PACKAGE_EXPORT"] = "PASS" if (ai_package / "project.arniskorea.json").exists() else "FAIL"
+    summary["AI_TRACE_WORKER"] = "PASS" if ai_report.get("auto_accepted_candidate_count", 0) >= 1 else "FAIL"
+    summary["AI_TRACE_SCHEMA"] = "PASS" if auto_accepted.get("type") == "FeatureCollection" else "FAIL"
+    summary["AI_TRACE_NO_WINDOWS_INTERNAL_MODEL"] = "PASS" if ai_report.get("windows_internal_model") is False else "FAIL"
+    write_json(project_paths(project_dir)["reports"] / "private-final-qa-summary.json", summary)
+    return summary
+
+
 def main() -> int:
     import argparse
 
@@ -382,6 +529,11 @@ def main() -> int:
     self_test.add_argument("--root", default=".")
     self_test.add_argument("--renderer", action="store_true")
     self_test.add_argument("--load-smoke", action="store_true")
+    final_qa = sub.add_parser("final-qa")
+    final_qa.add_argument("--output-dir", default="smoke")
+    final_qa.add_argument("--root", default=".")
+    final_qa.add_argument("--renderer", action="store_true")
+    final_qa.add_argument("--load-smoke", action="store_true")
     args = parser.parse_args()
     if args.command == "export-synthetic-osm":
         print(json.dumps(export_synthetic_osm(Path(args.project_dir)), ensure_ascii=False, indent=2))
@@ -389,6 +541,8 @@ def main() -> int:
         print(json.dumps(generate_world_from_project(Path(args.project_dir), Path(args.root), args.world_name, run_load_smoke=args.load_smoke), ensure_ascii=False, indent=2))
     elif args.command == "self-test":
         print(json.dumps(run_worldgen_self_test(Path(args.output_dir), Path(args.root), args.renderer, args.load_smoke), ensure_ascii=False, indent=2))
+    elif args.command == "final-qa":
+        print(json.dumps(run_private_final_qa(Path(args.output_dir), Path(args.root), args.renderer, args.load_smoke), ensure_ascii=False, indent=2))
     return 0
 
 

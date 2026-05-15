@@ -1,26 +1,23 @@
 # Paper 26.1.2 Compatibility Gate
 
-v1.1 release gate는 world folder 생성만으로 PASS하지 않습니다.
+v2.0.0 private-final은 파일 존재만으로 PASS하지 않습니다. release gate는 Paper 26.1.2 서버에서 load smoke를 통과해야 합니다.
 
-## 필수 조건
+## 검사
 
 - `level.dat` 존재
 - `session.lock` 존재
 - `region/*.mca` 존재
-- world root에 reports, naver_raster, previews, layer JSON 없음
-- 임시 Paper 서버에서 world load smoke PASS
+- world root에 reports, naver_raster, previews, JSON/MD metadata 없음
+- Paper 26.1.2 로그에 정상 load 신호 존재
+- crash report와 fatal chunk/level 오류 없음
 
-## Load Smoke
+## 실행 조건
 
-Actions는 별도 임시 서버 디렉터리를 만들고 다음 설정으로 실행합니다.
-
+- 별도 임시 서버 디렉터리 사용
 - `eula=true`
 - `online-mode=false`
 - `enable-rcon=false`
 - `nogui`
 - live server 사용 금지
-- timeout 120~240초
 
-로그에서 정상 load 신호를 확인하고 crash report, fatal chunk/level 오류가 있으면 실패합니다.
-
-Paper 26.1.2 호환 jar를 확보하지 못하면 fallback smoke를 성공으로 처리하지 않습니다.
+Paper 26.1.2 jar 확보가 실패하면 fallback smoke를 성공으로 처리하지 않습니다.

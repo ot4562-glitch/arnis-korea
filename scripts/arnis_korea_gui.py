@@ -65,6 +65,7 @@ try:
         create_project,
         empty_feature_collection,
         export_accepted_layers,
+        export_ai_trace_package,
         export_synthetic_osm_preview,
         extract_suggested_layers,
         feature,
@@ -75,6 +76,7 @@ try:
         parse_bbox_text,
         project_paths,
         read_json,
+        import_ai_trace_results,
         revert_accepted_to_suggested,
         run_self_test,
         save_project,
@@ -139,12 +141,16 @@ class TraceEditorApp:
         self.world_name = StringVar(value="HUFS Trace World")
         self.world_output_dir = StringVar(value=str(Path(self.project_dir.get()) / "playable_world"))
         self.copy_to_saves = BooleanVar(value=False)
+        self.overwrite_saves = BooleanVar(value=False)
+        self.run_local_load_smoke = BooleanVar(value=False)
         self.minecraft_saves_dir = StringVar(value=str(Path.home() / "AppData" / "Roaming" / ".minecraft" / "saves"))
         self.building_height_mode = StringVar(value="low-rise")
         self.world_terrain = BooleanVar(value=False)
         self.world_roof = BooleanVar(value=True)
         self.world_interior = BooleanVar(value=False)
         self.world_scale = StringVar(value="1.0")
+        self.ai_package_dir = StringVar(value=str(Path(self.project_dir.get()) / "ai_trace_package"))
+        self.ai_results_dir = StringVar(value=str(Path(self.project_dir.get()) / "ai_trace_results"))
 
         self._style()
         if not self.safe_mode:
@@ -166,13 +172,13 @@ class TraceEditorApp:
         outer = ttk.Frame(self.root, padding=16)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text="Arnis Korea - 네이버 지도 월드 생성기", style="Title.TLabel").pack(anchor="w")
-        self.status = StringVar(value="v1.1에서는 승인된 accepted layer만 Arnis Writer 월드 생성 입력으로 사용합니다.")
+        self.status = StringVar(value="private-final v2.0.0: 승인된 accepted layer만 월드 생성에 사용합니다.")
         ttk.Label(outer, textvariable=self.status).pack(anchor="w", pady=(4, 10))
 
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
         self.tabs: dict[str, ttk.Frame] = {}
-        for label in ["프로젝트", "네이버 API", "지도 범위", "레이어 편집", "내보내기", "월드 생성", "검수/리포트", "도움말"]:
+        for label in ["프로젝트", "네이버 API", "지도 범위", "레이어 편집", "AI Trace", "내보내기", "월드 생성", "최종 생성 마법사", "문제 해결", "검수/리포트", "도움말"]:
             frame = ttk.Frame(notebook, padding=12)
             notebook.add(frame, text=label)
             self.tabs[label] = frame
@@ -180,8 +186,11 @@ class TraceEditorApp:
         self._build_api_tab()
         self._build_bbox_tab()
         self._build_layer_tab()
+        self._build_ai_trace_tab()
         self._build_export_tab()
         self._build_worldgen_tab()
+        self._build_final_wizard_tab()
+        self._build_troubleshooting_tab()
         self._build_report_tab()
         self._build_help_tab()
 
@@ -304,6 +313,22 @@ class TraceEditorApp:
         self.export_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
         self.export_result.pack(fill="both", expand=True)
 
+    def _build_ai_trace_tab(self) -> None:
+        tab = self.tabs["AI Trace"]
+        ttk.Label(tab, text="AI 분석은 Windows EXE 내부 모델이 아니라 OCI AI Trace Worker 또는 dev-tools CLI에서 수행합니다. 결과는 suggested 후보로 가져오며 사용자가 승인해야 accepted layer가 됩니다.").pack(anchor="w")
+        form = ttk.Frame(tab)
+        form.pack(fill="x", pady=(10, 0))
+        self._row(form, "분석 패키지 폴더", ttk.Entry(form, textvariable=self.ai_package_dir), 0, ttk.Button(form, text="선택", command=self.choose_ai_package_dir))
+        self._row(form, "분석 결과 폴더", ttk.Entry(form, textvariable=self.ai_results_dir), 1, ttk.Button(form, text="선택", command=self.choose_ai_results_dir))
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=10)
+        ttk.Button(actions, text="OCI AI 분석용 패키지 내보내기", command=self.export_ai_trace_package_action).pack(side="left")
+        ttk.Button(actions, text="AI 분석 결과 가져오기", command=self.import_ai_trace_results_action).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="패키지 폴더 열기", command=lambda: open_path(Path(self.ai_package_dir.get()))).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="결과 폴더 열기", command=lambda: open_path(Path(self.ai_results_dir.get()))).pack(side="left", padx=(8, 0))
+        self.ai_trace_result = ScrolledText(tab, height=22, font=("Consolas", 10), wrap="word")
+        self.ai_trace_result.pack(fill="both", expand=True)
+
     def _build_worldgen_tab(self) -> None:
         tab = self.tabs["월드 생성"]
         ttk.Label(tab, text="월드 생성은 accepted_layers.geojson만 사용합니다. 승인되지 않은 suggested layer는 절대 포함하지 않습니다.").pack(anchor="w")
@@ -322,6 +347,8 @@ class TraceEditorApp:
         ttk.Label(options, text="scale").pack(side="left", padx=(14, 4))
         ttk.Entry(options, textvariable=self.world_scale, width=8).pack(side="left")
         ttk.Checkbutton(options, text="Minecraft saves로 바로 복사", variable=self.copy_to_saves).pack(side="left", padx=(14, 0))
+        ttk.Checkbutton(options, text="같은 이름 덮어쓰기", variable=self.overwrite_saves).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(options, text="로컬 Paper 26.1.2 smoke", variable=self.run_local_load_smoke).pack(side="left", padx=(8, 0))
         actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=(4, 10))
         self.worldgen_button = ttk.Button(actions, text="월드 생성", style="Primary.TButton", command=self.generate_world_action)
@@ -331,6 +358,34 @@ class TraceEditorApp:
         ttk.Button(actions, text="Minecraft saves로 복사", command=self.copy_world_to_saves_action).pack(side="left", padx=(8, 0))
         self.worldgen_result = ScrolledText(tab, height=22, font=("Consolas", 10), wrap="word")
         self.worldgen_result.pack(fill="both", expand=True)
+
+    def _build_final_wizard_tab(self) -> None:
+        tab = self.tabs["최종 생성 마법사"]
+        ttk.Label(tab, text="프로젝트 검수부터 synthetic OSM 생성, 월드 생성, Paper smoke 선택 실행, Minecraft saves 복사까지 한 화면에서 진행합니다.").pack(anchor="w")
+        ttk.Label(tab, text="마법사는 accepted layer만 사용합니다. suggested layer는 승인 전까지 후보일 뿐입니다.").pack(anchor="w", pady=(2, 8))
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=(0, 10))
+        ttk.Button(actions, text="1. 프로젝트 상태 체크", command=self.final_check_project).pack(side="left")
+        ttk.Button(actions, text="2. synthetic OSM 미리보기 생성", command=self.export_synthetic_osm_v11).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="3. 월드 생성 실행", style="Primary.TButton", command=self.generate_world_action).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="4. Minecraft saves로 복사", command=self.copy_world_to_saves_action).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="playable world 열기", command=self.open_generated_world).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="reports 열기", command=self.open_reports_dir).pack(side="left", padx=(8, 0))
+        self.final_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
+        self.final_result.pack(fill="both", expand=True)
+
+    def _build_troubleshooting_tab(self) -> None:
+        tab = self.tabs["문제 해결"]
+        ttk.Label(tab, text="앱이 열리지 않거나 월드 생성이 실패하면 latest.log와 reports 폴더를 먼저 확인하세요. 키 원문은 공유하지 마세요.").pack(anchor="w")
+        actions = ttk.Frame(tab)
+        actions.pack(fill="x", pady=10)
+        ttk.Button(actions, text="latest.log 열기", command=self.open_latest_log).pack(side="left")
+        ttk.Button(actions, text="reports 폴더 열기", command=self.open_reports_dir).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="프로젝트 검수 실행", command=self.validate_action).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="source policy 검수", command=self.write_source_policy).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="로컬 프로젝트 진단", command=self.local_project_diagnosis).pack(side="left", padx=(8, 0))
+        self.troubleshooting_result = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
+        self.troubleshooting_result.pack(fill="both", expand=True)
 
     def _build_report_tab(self) -> None:
         tab = self.tabs["검수/리포트"]
@@ -383,9 +438,27 @@ class TraceEditorApp:
         if selected:
             self.minecraft_saves_dir.set(selected)
 
+    def choose_ai_package_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.ai_package_dir.get() or self.project_dir.get() or str(ROOT))
+        if selected:
+            self.ai_package_dir.set(selected)
+
+    def choose_ai_results_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.ai_results_dir.get() or self.project_dir.get() or str(ROOT))
+        if selected:
+            self.ai_results_dir.set(selected)
+
     def sync_edit_session(self) -> None:
         self.edit_session = LayerEditSession(Path(self.project_dir.get()))
         self.world_output_dir.set(str(Path(self.project_dir.get()) / "playable_world"))
+        self.ai_package_dir.set(str(Path(self.project_dir.get()) / "ai_trace_package"))
+        self.ai_results_dir.set(str(Path(self.project_dir.get()) / "ai_trace_results"))
+        try:
+            from arnis_korea_detailed.trace_worldgen import detect_minecraft_saves_dir
+
+            self.minecraft_saves_dir.set(str(detect_minecraft_saves_dir()))
+        except Exception:
+            pass
 
     def create_project_action(self) -> None:
         try:
@@ -930,10 +1003,77 @@ class TraceEditorApp:
         self.export_result.delete("1.0", "end")
         self.export_result.insert("end", safe_json(report))
 
+    def export_ai_trace_package_action(self) -> None:
+        try:
+            manifest = export_ai_trace_package(Path(self.project_dir.get()), Path(self.ai_package_dir.get()))
+            self.ai_trace_result.delete("1.0", "end")
+            self.ai_trace_result.insert("end", safe_json({"exported": True, "package_dir": self.ai_package_dir.get(), "manifest": manifest, "contains_key": False}))
+        except Exception as exc:
+            write_boot_log("AI_TRACE_PACKAGE_EXPORT_FAIL", exc)
+            messagebox.showerror("AI Trace 패키지 내보내기 실패", str(exc))
+
+    def import_ai_trace_results_action(self) -> None:
+        try:
+            result = import_ai_trace_results(Path(self.project_dir.get()), Path(self.ai_results_dir.get()))
+            self.refresh_layer_lists()
+            self.draw_canvas()
+            self.ai_trace_result.delete("1.0", "end")
+            self.ai_trace_result.insert("end", safe_json(result))
+            self.status.set("AI Trace 결과를 suggested 후보로 가져왔습니다. 월드 생성에는 사용자가 승인한 accepted layer만 사용됩니다.")
+        except Exception as exc:
+            write_boot_log("AI_TRACE_RESULT_IMPORT_FAIL", exc)
+            messagebox.showerror("AI Trace 결과 가져오기 실패", str(exc))
+
     def validate_action(self) -> None:
         report = validate_project(Path(self.project_dir.get()))
         self.report_result.delete("1.0", "end")
         self.report_result.insert("end", safe_json(report))
+        if hasattr(self, "troubleshooting_result"):
+            self.troubleshooting_result.delete("1.0", "end")
+            self.troubleshooting_result.insert("end", safe_json(report))
+
+    def open_reports_dir(self) -> None:
+        open_path(project_paths(Path(self.project_dir.get()))["reports"])
+
+    def final_check_project(self) -> None:
+        try:
+            paths = project_paths(Path(self.project_dir.get()))
+            project = load_project(Path(self.project_dir.get())) if paths["project"].exists() else {}
+            accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
+            suggested = read_json(paths["suggested"]) if paths["suggested"].exists() else empty_feature_collection()
+            data = {
+                "project_file": paths["project"].exists(),
+                "project_name": project.get("project_name", ""),
+                "bbox": project.get("bbox", {}),
+                "spawn_point": project.get("spawn_point", {}),
+                "accepted_features": len(accepted.get("features", [])),
+                "suggested_features": len(suggested.get("features", [])),
+                "worldgen_input": "accepted_layers_only",
+                "ready_for_worldgen": bool(accepted.get("features")),
+            }
+            self.final_result.delete("1.0", "end")
+            self.final_result.insert("end", safe_json(data))
+        except Exception as exc:
+            write_boot_log("FINAL_CHECK_PROJECT_FAIL", exc)
+            messagebox.showerror("프로젝트 상태 체크 실패", str(exc))
+
+    def local_project_diagnosis(self) -> None:
+        try:
+            paths = project_paths(Path(self.project_dir.get()))
+            files = sorted(str(path.relative_to(Path(self.project_dir.get()))) for path in Path(self.project_dir.get()).rglob("*") if path.is_file())
+            data = {
+                "project_dir": self.project_dir.get(),
+                "latest_log": str(LATEST_LOG),
+                "reports_dir": str(paths["reports"]),
+                "files": files[:200],
+                "file_count": len(files),
+                "diagnosis_scope": "local_project_only",
+            }
+            self.troubleshooting_result.delete("1.0", "end")
+            self.troubleshooting_result.insert("end", safe_json(data))
+        except Exception as exc:
+            write_boot_log("LOCAL_PROJECT_DIAGNOSIS_FAIL", exc)
+            messagebox.showerror("진단 실패", str(exc))
 
     def _world_dir(self) -> Path:
         name = self.world_name.get().strip() or self.project_name.get().strip() or "Arnis Korea World"
@@ -967,10 +1107,10 @@ class TraceEditorApp:
                     interior=self.world_interior.get(),
                     roof=self.world_roof.get(),
                     scale=float(self.world_scale.get()),
-                    run_load_smoke=False,
+                    run_load_smoke=self.run_local_load_smoke.get(),
                 )
                 if self.copy_to_saves.get():
-                    target = copy_world_to_saves(Path(report["world_dir"]), Path(self.minecraft_saves_dir.get()))
+                    target = copy_world_to_saves(Path(report["world_dir"]), Path(self.minecraft_saves_dir.get()), overwrite=self.overwrite_saves.get())
                     report["copied_to_minecraft_saves"] = str(target)
                 self.root.after(0, lambda report=report: self.after_worldgen(report, None))
             except Exception as exc:
@@ -988,6 +1128,9 @@ class TraceEditorApp:
             return
         self.status.set("월드 생성 완료")
         self.write_worldgen(report)
+        if hasattr(self, "final_result"):
+            self.final_result.delete("1.0", "end")
+            self.final_result.insert("end", safe_json(report))
 
     def open_generated_world(self) -> None:
         open_path(self._world_dir())
@@ -996,7 +1139,7 @@ class TraceEditorApp:
         try:
             from arnis_korea_detailed.trace_worldgen import copy_world_to_saves
 
-            target = copy_world_to_saves(self._world_dir(), Path(self.minecraft_saves_dir.get()))
+            target = copy_world_to_saves(self._world_dir(), Path(self.minecraft_saves_dir.get()), overwrite=self.overwrite_saves.get())
             self.write_worldgen({"copied_to_minecraft_saves": str(target), "copied_only_world_dir": True})
         except Exception as exc:
             write_boot_log("COPY_WORLD_TO_SAVES_FAIL", exc)
