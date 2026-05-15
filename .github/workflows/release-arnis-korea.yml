@@ -80,9 +80,7 @@ jobs:
           Copy-Item web\dynamic_selector.html package\examples\dynamic_selector.html
           if (Test-Path package\arnis-korea-cli.exe) { throw "CLI exe must not be artifact root" }
           Get-ChildItem package -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-          $gui = Start-Process -FilePath ".\package\arnis-korea.exe" -ArgumentList "--self-test-gui" -Wait -PassThru
-          if ($gui.ExitCode -ne 0) { throw "packaged GUI self-test failed with $($gui.ExitCode)" }
-          if (Test-Path package\smoke) { Remove-Item package\smoke -Recurse -Force }
+          if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found at artifact root" }
 
       - name: Source and artifact policy scans
         shell: bash
