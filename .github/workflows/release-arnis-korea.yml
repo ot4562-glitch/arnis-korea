@@ -34,8 +34,8 @@ jobs:
           python -m arnis_korea_detailed.trace_editor_core self-test --output-dir smoke
           python scripts\arnis_korea_gui.py --self-test-gui
           python scripts\arnis_korea_gui.py --safe-mode --self-test-gui
-          pyinstaller --clean --onefile --windowed --name arnis-korea --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.static_map_request_planner --collect-submodules arnis_korea_detailed scripts\arnis_korea_gui.py
-          pyinstaller --clean --onefile --console --name arnis-korea-debug --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.static_map_request_planner --collect-submodules arnis_korea_detailed scripts\arnis_korea_gui.py
+          pyinstaller --clean --onefile --windowed --name arnis-korea --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
+          pyinstaller --clean --onefile --console --name arnis-korea-debug --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext --hidden-import arnis_korea_detailed.trace_editor_core --hidden-import arnis_korea_detailed.static_map_request_planner arnis_korea_gui_entry.py
           pyinstaller --clean --onefile --name arnis-korea-cli --paths src src\arnis_korea_detailed\trace_editor_core.py
           if (-not (Test-Path dist\arnis-korea.exe)) { throw "missing GUI exe" }
           if (-not (Test-Path dist\arnis-korea-debug.exe)) { throw "missing debug GUI exe" }
