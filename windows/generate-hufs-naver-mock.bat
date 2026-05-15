@@ -10,5 +10,6 @@ arnis-korea-cli.exe generate ^
   --interior=false ^
   --roof=true ^
   --building-mode map-readable ^
+  --writer arnis-no-network ^
   --noise-filter-level high ^
   --road-width-multiplier 1.5

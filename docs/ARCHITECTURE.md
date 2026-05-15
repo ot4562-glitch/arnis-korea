@@ -1,6 +1,6 @@
 # Architecture
 
-Arnis Korea v0.5.2는 GUI/CLI가 같은 Python core를 호출하고, Naver-only 모드에서는 synthetic OSM-like local file을 patched upstream Arnis no-network renderer에 전달해 Java world를 생성합니다.
+Arnis Korea v0.7.0은 GUI/CLI가 같은 Python core를 호출하고, Naver-only 모드에서는 synthetic OSM-like local file을 patched upstream Arnis no-network renderer에 전달해 Java world를 생성합니다. 릴리스 PASS 기준은 Minecraft headless load smoke입니다.
 
 ## 구성
 
@@ -14,7 +14,8 @@ Arnis Korea v0.5.2는 GUI/CLI가 같은 Python core를 호출하고, Naver-only 
 - `src/arnis_korea_detailed/geometry_cleanup.py`: small object cleanup
 - `src/arnis_korea_detailed/naver_synthetic_layer.py`: synthetic feature layer
 - `src/arnis_korea_detailed/arnis_no_network_renderer.py`: patched Arnis renderer wrapper
-- `src/arnis_korea_detailed/minimal_world_writer.py`: debug/fallback only writer
+- `src/arnis_korea_detailed/minimal_world_writer.py`: `custom-debug` only writer, release path 아님
+- `src/arnis_korea_detailed/minecraft_load_smoke.py`: 임시 Minecraft Java server load smoke
 
 ## 흐름
 
@@ -27,7 +28,8 @@ Arnis Korea v0.5.2는 GUI/CLI가 같은 Python core를 호출하고, Naver-only 
 7. patched Arnis renderer가 `--file naver_synthetic_osm.json`로 Java world를 생성합니다.
 8. 생성된 Arnis world folder를 사용자가 지정한 `world_name`으로 정리합니다.
 9. quality report, source-policy report, world validation report를 metadata 폴더에 작성합니다.
+10. Actions에서 `minecraft_load_smoke.json`을 생성하고 PASS를 확인합니다.
 
 ## Renderer 선택
 
-v0.5.2 release path는 `patched_arnis_no_network_renderer`입니다. `arnis_korea_minimal_anvil_writer`는 compatibility warning이 붙는 debug/fallback path입니다.
+v0.7.0 release path는 `patched_arnis_no_network_renderer`입니다. `arnis_korea_minimal_anvil_writer`는 compatibility warning이 붙는 `custom-debug` path입니다.

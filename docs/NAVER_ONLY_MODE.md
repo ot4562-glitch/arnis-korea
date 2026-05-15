@@ -1,46 +1,34 @@
 # Naver-only Mode
 
-v0.6.0 Naver-only mode는 공식 Naver Static Map raster를 분석해 로컬 synthetic feature layer를 만들고, 기본적으로 지도형 Minecraft world writer로 낮고 읽기 쉬운 월드를 생성합니다.
+v0.7.0 Naver-only mode는 공식 Naver Static Map raster를 분석해 synthetic OSM-like local file을 만들고, patched Arnis no-network renderer에 `--file`로 전달합니다.
+
+## Compatibility Gate
+
+v0.7.0부터 Minecraft load smoke가 필수입니다. `level.dat`, `session.lock`, `region/*.mca` 존재만으로는 PASS가 아닙니다.
+
+Actions는 임시 Minecraft Java `1.21.1` server directory를 만들고 생성 world를 `world` 폴더로 복사한 뒤 server jar를 `nogui`로 실행합니다. `Done` 로그, crash report 부재, level/region/chunk fatal 오류 부재를 확인합니다.
 
 ## Renderer
 
-- 기본 writer: `arnis_korea_minimal_anvil_writer` map-readable path
-- 실험 writer: `full-experimental` 또는 `--writer arnis`에서 patched Arnis no-network renderer 사용
-- target Minecraft Java: 1.21.x
-- renderer network는 Naver-only path에서 비활성화됩니다.
-- Overture, Overpass, elevation external fetch, land-cover external fetch, Nominatim은 Naver-only path에서 비활성화됩니다.
+- 기본 writer: `arnis-no-network`
+- custom writer: `custom-debug`, 릴리스 차단 경로
+- `--terrain=false`, `--land-cover=false`, `--file naver_synthetic_osm.json`
+- renderer network disabled
 
-## Building Modes
+## Synthetic OSM
 
-- `map-readable`: 기본값, 도로/녹지/수역 우선, 건물 1-3블록 footprint/outline 중심
-- `footprint-only`: 건물 바닥 윤곽만
-- `low-rise`: 낮은 건물 2-5블록
-- `roads-green-water-only`: 건물 생성 안 함
-- `full-experimental`: 기존 full building extrusion 실험 옵션
+`naver_synthetic_osm.json`은 다음 sanity check를 통과해야 합니다.
 
-## Real Naver command
-
-```powershell
-.\arnis-korea-cli.exe generate `
-  --source naver-only `
-  --bbox "37.5955,127.0555,37.5985,127.0620" `
-  --output-dir ".\output-hufs-naver" `
-  --world-name "world-hufs-naver" `
-  --terrain=false `
-  --interior=false `
-  --roof=true `
-  --building-mode map-readable `
-  --noise-filter-level high `
-  --road-width-multiplier 1.5 `
-  --allow-static-raster-storage `
-  --allow-static-raster-analysis `
-  --accept-naver-static-raster-terms
-```
+- unique node/way ids
+- all way node refs exist
+- building/water/green polygons closed
+- coordinates clipped to bbox
+- tags compatible with Arnis parser: `building=yes`, `highway=*`, `natural=water`, `leisure=park`, `railway=rail`
 
 ## Output
 
 - playable world: `<output_dir>\<world_name>\`
 - project metadata: `<output_dir>\arnis_korea_project\`
-- debug previews: `<output_dir>\arnis_korea_project\debug\`
+- compatibility report: `<output_dir>\arnis_korea_project\minecraft_load_smoke.json`
 
-`features.normalized.json`에는 class별 count, before/after filter count, dropped noise count가 기록됩니다.
+Naver-only mode does not call OSM, Overpass, Overture, AWS, ESA, Nominatim, or public geodata sources.

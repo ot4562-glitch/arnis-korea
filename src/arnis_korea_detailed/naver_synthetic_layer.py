@@ -13,7 +13,7 @@ CLASS_TO_TAGS = {
     "road": {"highway": "residential"},
     "building_candidate": {"building": "yes"},
     "building": {"building": "yes"},
-    "green": {"landuse": "grass"},
+    "green": {"leisure": "park"},
     "water": {"natural": "water"},
     "rail": {"railway": "rail"},
     "campus_area": {"amenity": "university"},
@@ -116,6 +116,48 @@ def build_synthetic_documents(
     )
 
 
+def validate_synthetic_osm(osm_doc: dict[str, Any], bbox: dict[str, float]) -> dict[str, Any]:
+    elements = osm_doc.get("elements", [])
+    nodes: dict[int, dict[str, Any]] = {}
+    way_ids: set[int] = set()
+    errors: list[str] = []
+    for element in elements:
+        if element.get("type") == "node":
+            node_id = int(element.get("id"))
+            if node_id in nodes:
+                errors.append(f"duplicate_node:{node_id}")
+            nodes[node_id] = element
+            lat = float(element.get("lat", 0))
+            lon = float(element.get("lon", 0))
+            if not (bbox["min_lat"] <= lat <= bbox["max_lat"] and bbox["min_lng"] <= lon <= bbox["max_lng"]):
+                errors.append(f"node_outside_bbox:{node_id}")
+        elif element.get("type") == "way":
+            way_id = int(element.get("id"))
+            if way_id in way_ids:
+                errors.append(f"duplicate_way:{way_id}")
+            way_ids.add(way_id)
+            refs = [int(ref) for ref in element.get("nodes", [])]
+            missing = [ref for ref in refs if ref not in nodes]
+            if missing:
+                errors.append(f"missing_way_refs:{way_id}")
+            tags = element.get("tags", {})
+            is_polygon = any(key in tags for key in ["building", "natural", "leisure", "landuse", "amenity"])
+            if is_polygon and refs:
+                first = nodes.get(refs[0], {})
+                last = nodes.get(refs[-1], {})
+                if (round(float(first.get("lat", 0)), 8), round(float(first.get("lon", 0)), 8)) != (round(float(last.get("lat", 0)), 8), round(float(last.get("lon", 0)), 8)):
+                    errors.append(f"open_polygon:{way_id}")
+            allowed = any(key in tags for key in ["building", "highway", "natural", "leisure", "railway", "amenity"])
+            if not allowed:
+                errors.append(f"unsupported_tags:{way_id}")
+    return {
+        "valid": not errors,
+        "node_count": len(nodes),
+        "way_count": len(way_ids),
+        "errors": errors[:50],
+    }
+
+
 def _clip_coordinates(coordinates: list[list[float]], bbox: dict[str, float]) -> list[list[float]]:
     clipped: list[list[float]] = []
     for point in coordinates:
@@ -138,6 +180,10 @@ def write_synthetic_layer(
     road_width_multiplier: float = 1.0,
 ) -> dict[str, str]:
     osm_doc, world_doc = build_synthetic_documents(features, bbox, source_mode, building_mode, road_width_multiplier)
+    validation = validate_synthetic_osm(osm_doc, bbox)
+    if not validation["valid"]:
+        raise ValueError(f"synthetic OSM validation failed: {validation['errors'][:5]}")
+    world_doc["metadata"]["synthetic_osm_validation"] = validation
     osm_path = output_dir / "naver_synthetic_osm.json"
     world_path = output_dir / "naver_world_features.json"
     osm_path.write_text(json.dumps(osm_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

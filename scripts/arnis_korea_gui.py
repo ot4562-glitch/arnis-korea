@@ -69,6 +69,7 @@ class ArnisKoreaApp:
         self.terrain = BooleanVar(value=False)
         self.source = StringVar(value="naver-only")
         self.building_mode = StringVar(value="map-readable")
+        self.writer = StringVar(value="arnis-no-network")
         self.interior = BooleanVar(value=False)
         self.roof = BooleanVar(value=True)
         self.road_width_multiplier = StringVar(value="1.5")
@@ -151,12 +152,14 @@ class ArnisKoreaApp:
         self._row(form, "소스", source, 5)
         mode = ttk.Combobox(form, textvariable=self.building_mode, values=["map-readable", "footprint-only", "low-rise", "full-experimental", "roads-green-water-only"], state="readonly")
         self._row(form, "건물 생성 모드", mode, 6)
-        ttk.Label(form, text="기본값: 지도형 모드, 추천. 3D 건물 실험 모드는 높이/형태 정확도를 보장하지 않습니다.").grid(row=7, column=1, sticky="w", pady=(0, 6))
+        writer = ttk.Combobox(form, textvariable=self.writer, values=["arnis-no-network", "custom-debug"], state="readonly")
+        self._row(form, "월드 writer", writer, 7)
+        ttk.Label(form, text="Minecraft 호환성 검증 필요: 기본 writer는 patched Arnis no-network입니다. custom-debug는 릴리스용이 아닙니다.").grid(row=8, column=1, sticky="w", pady=(0, 6))
         checks = ttk.Frame(form)
         ttk.Checkbutton(checks, text="Naver terrain estimate experimental", variable=self.terrain, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(checks, text="내부 생성", variable=self.interior, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(checks, text="지붕 생성", variable=self.roof, command=self.update_preview).pack(side="left")
-        self._row(form, "옵션", checks, 8)
+        self._row(form, "옵션", checks, 9)
         advanced = ttk.Frame(form)
         ttk.Label(advanced, text="scale").pack(side="left")
         ttk.Entry(advanced, textvariable=self.world_scale, width=6).pack(side="left", padx=(4, 12))
@@ -165,13 +168,13 @@ class ArnisKoreaApp:
         ttk.Label(advanced, text="min area").pack(side="left")
         ttk.Entry(advanced, textvariable=self.building_min_area, width=8).pack(side="left", padx=(4, 12))
         ttk.Combobox(advanced, textvariable=self.noise_filter_level, values=["low", "medium", "high"], state="readonly", width=8).pack(side="left")
-        self._row(form, "고급 설정", advanced, 9)
+        self._row(form, "고급 설정", advanced, 10)
         consent = ttk.Frame(form)
         ttk.Checkbutton(consent, text="Static Map 저장 동의", variable=self.allow_static_storage, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(consent, text="Static Map 분석 동의", variable=self.allow_static_analysis, command=self.update_preview).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(consent, text="공식 Static Map 조건 확인", variable=self.accept_static_terms, command=self.update_preview).pack(side="left")
-        self._row(form, "Naver raster", consent, 10)
-        for var in [self.output_dir, self.world_name, self.bbox, self.spawn_lat, self.spawn_lng, self.source, self.building_mode, self.road_width_multiplier, self.building_min_area, self.noise_filter_level, self.world_scale]:
+        self._row(form, "Naver raster", consent, 11)
+        for var in [self.output_dir, self.world_name, self.bbox, self.spawn_lat, self.spawn_lng, self.source, self.building_mode, self.writer, self.road_width_multiplier, self.building_min_area, self.noise_filter_level, self.world_scale]:
             var.trace_add("write", lambda *_: self.update_preview())
 
         actions = ttk.Frame(self.world_tab)
@@ -183,6 +186,7 @@ class ArnisKoreaApp:
         ttk.Button(actions, text="디버그 이미지 열기", command=self.open_debug_dir).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="분석 미리보기 열기", command=self.open_debug_dir).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="품질 리포트 열기", command=self.open_quality_report).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="호환성 리포트 열기", command=self.open_compat_report).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="프로젝트 폴더 열기", command=self.open_project_dir).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="월드 폴더 열기", command=self.open_world_dir).pack(side="left", padx=(8, 0))
 
@@ -334,7 +338,7 @@ class ArnisKoreaApp:
             self.map_result.insert("end", str(exc))
 
     def mock_vectorize(self) -> None:
-        self.run_cli(["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--source", "mock-naver", f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}", "--noise-filter-level", self.noise_filter_level.get()], verify_world=True)
+        self.run_cli(["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--source", "mock-naver", f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}", "--noise-filter-level", self.noise_filter_level.get(), "--writer", self.writer.get()], verify_world=True)
 
     def save_log(self) -> None:
         path = filedialog.asksaveasfilename(defaultextension=".log", filetypes=[("Log", "*.log"), ("Text", "*.txt")])
@@ -348,7 +352,7 @@ class ArnisKoreaApp:
         return [sys.executable, str(ROOT / "scripts" / "arnis_korea_detailed.py")]
 
     def build_generate_args(self) -> list[str]:
-        args = ["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--source", self.source.get(), f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}", "--world-scale", self.world_scale.get(), "--road-width-multiplier", self.road_width_multiplier.get(), "--noise-filter-level", self.noise_filter_level.get()]
+        args = ["generate", "--bbox", self.bbox.get(), "--output-dir", self.output_dir.get(), "--world-name", self.world_name.get(), "--source", self.source.get(), f"--building-mode={self.building_mode.get()}", f"--interior={str(self.interior.get()).lower()}", f"--roof={str(self.roof.get()).lower()}", "--world-scale", self.world_scale.get(), "--road-width-multiplier", self.road_width_multiplier.get(), "--noise-filter-level", self.noise_filter_level.get(), "--writer", self.writer.get()]
         if self.building_min_area.get().strip():
             args.extend(["--building-min-area", self.building_min_area.get().strip()])
         if self.terrain.get():
@@ -451,6 +455,16 @@ class ArnisKoreaApp:
         path = (self.last_project_dir or Path(self.output_dir.get()) / "arnis_korea_project") / "arnis-korea-quality-report.md"
         if not path.exists():
             messagebox.showwarning("리포트 없음", "먼저 월드를 생성하세요.")
+            return
+        if sys.platform.startswith("win"):
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        else:
+            webbrowser.open(path.as_uri())
+
+    def open_compat_report(self) -> None:
+        path = (self.last_project_dir or Path(self.output_dir.get()) / "arnis_korea_project") / "minecraft_load_smoke.json"
+        if not path.exists():
+            messagebox.showwarning("리포트 없음", "Actions 또는 CLI --validate-minecraft-load 실행 결과가 필요합니다.")
             return
         if sys.platform.startswith("win"):
             os.startfile(str(path))  # type: ignore[attr-defined]

@@ -60,8 +60,7 @@ def run_patched_arnis_renderer(
         f"--output-dir={output_parent}",
         "--land-cover=false",
     ]
-    if terrain:
-        command.append("--terrain")
+    terrain_forced_off = bool(terrain)
     if interior is not None:
         command.append(f"--interior={str(interior).lower()}")
     if roof is not None:
@@ -83,6 +82,7 @@ def run_patched_arnis_renderer(
         "writer": "patched_arnis_no_network_renderer",
         "renderer_network_disabled": True,
         "synthetic_input_used": True,
+        "terrain_forced_off": terrain_forced_off,
         "command": command,
         "returncode": result.returncode,
         "stdout_tail": (result.stdout or "")[-4000:],

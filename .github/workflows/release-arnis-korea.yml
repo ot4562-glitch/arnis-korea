@@ -8,7 +8,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  ARTIFACT_NAME: arnis-korea-0.6.0-windows-x86_64
+  ARTIFACT_NAME: arnis-korea-0.7.0-windows-x86_64
+  TARGET_MC_VERSION: "1.21.1"
 
 permissions:
   contents: read
@@ -26,6 +27,11 @@ jobs:
           python-version: "3.11"
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
 
       - name: Ensure upstream Arnis source
         shell: bash
@@ -81,6 +87,7 @@ jobs:
           Copy-Item -Recurse src\arnis_korea_detailed package\src\
           Copy-Item scripts\arnis_korea_detailed.py package\scripts\
           Copy-Item scripts\arnis_korea_gui.py package\scripts\
+          Copy-Item scripts\minecraft_load_smoke.py package\scripts\
           Copy-Item windows\open-gui.bat package\open-gui.bat
           Copy-Item windows\run-help.bat package\run-help.bat
           Copy-Item windows\generate-hufs-naver-mock.bat package\generate-hufs-naver-mock.bat
@@ -96,9 +103,9 @@ jobs:
           & .\package\arnis-korea-cli.exe plan-static --bbox-file package\sample_bbox_hufs.json | Out-File plan-static.json -Encoding utf8
           New-Item -ItemType Directory -Force smoke | Out-Null
           & .\package\arnis-korea-cli.exe mock-vectorize --bbox-file package\sample_bbox_hufs.json --output-dir smoke\outputs
-          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\smoke-output --world-name "world-readable-smoke" --source mock-naver --terrain=false --interior=false --roof=true --building-mode map-readable --noise-filter-level high --road-width-multiplier 1.5
+          & .\package\arnis-korea-cli.exe generate --bbox "37.5955,127.0555,37.5985,127.0620" --output-dir smoke\smoke-output --world-name "world-load-smoke" --source mock-naver --terrain=false --interior=false --roof=true --building-mode map-readable --noise-filter-level high --road-width-multiplier 1.5 --writer arnis-no-network --validate-minecraft-load --target-minecraft-version "$env:TARGET_MC_VERSION" --minecraft-load-timeout 240
 
-          $world = "smoke\smoke-output\world-readable-smoke"
+          $world = "smoke\smoke-output\world-load-smoke"
           $project = "smoke\smoke-output\arnis_korea_project"
           if (-not (Test-Path "$world\level.dat")) { throw "level.dat not found" }
           if (-not (Test-Path "$world\session.lock")) { throw "session.lock not found" }
@@ -110,6 +117,7 @@ jobs:
           }
           if (-not (Test-Path "$project\world_validation.json")) { throw "world_validation.json not found" }
           if (-not (Test-Path "$project\arnis-korea-quality-report.md")) { throw "quality report not found" }
+          if (-not (Test-Path "$project\minecraft_load_smoke.json")) { throw "minecraft_load_smoke.json not found" }
           foreach ($preview in @("original_static_map.png", "segmentation_preview.png", "class_mask_roads.png", "class_mask_buildings.png", "class_mask_green_water.png", "world_overlay_preview.png")) {
             if (-not (Test-Path (Join-Path "$project\debug" $preview))) { throw "debug preview not found: $preview" }
           }
@@ -120,12 +128,17 @@ jobs:
           if ($quality -notmatch "map_readability_score") { throw "map_readability_score missing" }
           $validation = Get-Content "$project\world_validation.json" -Raw | ConvertFrom-Json
           if ($validation.valid -ne $true) { throw "world validation failed" }
+          $loadSmoke = Get-Content "$project\minecraft_load_smoke.json" -Raw | ConvertFrom-Json
+          if ($loadSmoke.passed -ne $true) { throw "Minecraft load smoke failed" }
+          if ($loadSmoke.done_seen -ne $true) { throw "Minecraft load smoke did not see Done" }
+          if ($loadSmoke.fatal_log_patterns.Count -gt 0) { throw "Minecraft load smoke fatal patterns found" }
           $policy = Get-Content "$project\source-policy-report.json" -Raw | ConvertFrom-Json
           if ($policy.external_non_naver_sources_used -ne $false) { throw "source policy failed" }
           if ($policy.renderer_network_disabled -ne $true) { throw "renderer network policy failed" }
           if ($policy.synthetic_input_used -ne $true) { throw "synthetic input policy failed" }
+          if ($policy.minecraft_load_smoke_required -ne $true) { throw "minecraft load smoke policy missing" }
           if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found" }
-          if (Get-ChildItem package -Recurse -Include *.png,*.mca,level.dat,session.lock -ErrorAction SilentlyContinue) { throw "generated raster/world/debug file leaked into package" }
+          if (Get-ChildItem package -Recurse -Include *.png,*.mca,level.dat,session.lock,*.jar -ErrorAction SilentlyContinue) { throw "generated raster/world/debug/server file leaked into package" }
           $gui = Start-Process -FilePath ".\package\arnis-korea.exe" -ArgumentList "--self-test-gui" -Wait -PassThru
           if ($gui.ExitCode -ne 0) { throw "GUI self-test failed with $($gui.ExitCode)" }
 
@@ -139,7 +152,7 @@ jobs:
           p2='github''_pat_'
           p3='/etc/minseong/''secrets'
           p4='naver_maps_api''_key'
-          if grep -RInE "$p1|$p2|$p3|$p4" --exclude-dir=.git --exclude='release_scan.py' . package; then
+          if grep -RInE "$p1|$p2|$p3|$p4" --exclude-dir=.git --exclude-dir=smoke --exclude='*.jar' --exclude='release_scan.py' . package; then
             echo "secret or policy scan failed" >&2
             exit 1
           fi
@@ -157,8 +170,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-0.6.0-windows-x86_64
+          name: arnis-korea-0.7.0-windows-x86_64
           path: |
-            arnis-korea-0.6.0-windows-x86_64.zip
+            arnis-korea-0.7.0-windows-x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt

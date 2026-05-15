@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-BINARY_SUFFIXES = {".exe", ".dll", ".so", ".dylib", ".a", ".rlib", ".gz", ".zip", ".png", ".ppm", ".jpg", ".jpeg", ".gif", ".icns", ".ico", ".mca", ".dat"}
+BINARY_SUFFIXES = {".exe", ".dll", ".so", ".dylib", ".a", ".rlib", ".gz", ".zip", ".jar", ".png", ".ppm", ".jpg", ".jpeg", ".gif", ".icns", ".ico", ".mca", ".dat"}
 SKIP_PARTS = {".git", "target", "__pycache__", "upstream", "bin", "build", "dist", "smoke"}
 
 POLICY_PATTERNS = [

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import gzip
 import json
+import struct
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +41,51 @@ def _basic_level_dat_parse(path: Path) -> dict[str, Any]:
         return {"parseable": False, "error": "root_tag_is_not_compound"}
     required_strings = [b"Data", b"LevelName", b"DataVersion", b"Version", b"WorldGenSettings", b"SpawnX", b"SpawnY", b"SpawnZ"]
     missing = [item.decode("ascii") for item in required_strings if item not in raw]
-    return {"parseable": not missing, "missing_markers": missing, "bytes": len(raw)}
+    return {
+        "parseable": not missing,
+        "missing_markers": missing,
+        "bytes": len(raw),
+        "has_DataVersion": b"DataVersion" in raw,
+        "has_LevelName": b"LevelName" in raw,
+        "has_spawn": all(item in raw for item in [b"SpawnX", b"SpawnY", b"SpawnZ"]),
+    }
+
+
+def _first_chunk_parse(path: Path) -> dict[str, Any]:
+    try:
+        data = path.read_bytes()
+        if len(data) < 8192:
+            return {"parseable": False, "error": "region_too_small", "bytes": len(data)}
+        locations = data[:4096]
+        for index in range(1024):
+            raw_location = struct.unpack(">I", locations[index * 4 : index * 4 + 4])[0]
+            sector_offset = raw_location >> 8
+            sector_count = raw_location & 0xFF
+            if sector_offset == 0 or sector_count == 0:
+                continue
+            chunk_offset = sector_offset * 4096
+            if chunk_offset + 5 > len(data):
+                return {"parseable": False, "error": "chunk_offset_out_of_range", "chunk_index": index}
+            length = struct.unpack(">I", data[chunk_offset : chunk_offset + 4])[0]
+            compression = data[chunk_offset + 4]
+            payload = data[chunk_offset + 5 : chunk_offset + 4 + length]
+            if compression == 2:
+                nbt = zlib.decompress(payload)
+            elif compression == 1:
+                nbt = gzip.decompress(payload)
+            else:
+                return {"parseable": False, "error": f"unsupported_compression_{compression}", "chunk_index": index}
+            missing = [name for name in [b"DataVersion", b"sections", b"block_states"] if name not in nbt]
+            return {
+                "parseable": not missing and bool(nbt and nbt[0] == 10),
+                "chunk_index": index,
+                "compression": compression,
+                "nbt_bytes": len(nbt),
+                "missing_markers": [item.decode("ascii") for item in missing],
+            }
+        return {"parseable": False, "error": "no_chunk_locations"}
+    except Exception as exc:
+        return {"parseable": False, "error": type(exc).__name__}
 
 
 def validate_world_layout(world_dir: Path, metadata_dir: Path, write_report: bool = True) -> dict[str, Any]:
@@ -49,6 +95,7 @@ def validate_world_layout(world_dir: Path, metadata_dir: Path, write_report: boo
     forbidden_entries = sorted(root_entries & FORBIDDEN_WORLD_ROOT_NAMES)
     unexpected_entries = sorted(root_entries - ALLOWED_WORLD_ROOT_NAMES)
     mca_sizes = {path.name: path.stat().st_size for path in mca_files}
+    first_region = mca_files[0] if mca_files else None
     report = {
         "schema": "arnis-korea.minecraft_world_validation.v1",
         "world_dir": str(world_dir),
@@ -66,6 +113,7 @@ def validate_world_layout(world_dir: Path, metadata_dir: Path, write_report: boo
             "source_policy_report_in_metadata": (metadata_dir / "source-policy-report.json").is_file(),
             "quality_report_in_metadata": (metadata_dir / "arnis-korea-quality-report.md").is_file(),
             "level_dat_parse": _basic_level_dat_parse(world_dir / "level.dat") if (world_dir / "level.dat").is_file() else {"parseable": False, "error": "missing"},
+            "first_chunk_parse": _first_chunk_parse(first_region) if first_region else {"parseable": False, "error": "missing_region"},
         },
     }
     checks = report["checks"]
@@ -81,6 +129,7 @@ def validate_world_layout(world_dir: Path, metadata_dir: Path, write_report: boo
         and checks["source_policy_report_in_metadata"]
         and checks["quality_report_in_metadata"]
         and checks["level_dat_parse"].get("parseable")
+        and checks["first_chunk_parse"].get("parseable")
     )
     if write_report:
         metadata_dir.mkdir(parents=True, exist_ok=True)

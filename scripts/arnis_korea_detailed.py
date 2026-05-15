@@ -30,6 +30,7 @@ from arnis_korea_detailed.korea_feature_schema import (
     normalized_document,
 )
 from arnis_korea_detailed.minimal_world_writer import write_world
+from arnis_korea_detailed.minecraft_load_smoke import DEFAULT_TARGET_MINECRAFT_VERSION, run_minecraft_load_smoke
 from arnis_korea_detailed.minecraft_world_validator import ALLOWED_WORLD_ROOT_NAMES, FORBIDDEN_WORLD_ROOT_NAMES, validate_world_layout
 from arnis_korea_detailed.mock_raster_provider import create_mock_raster
 from arnis_korea_detailed.naver_synthetic_layer import write_synthetic_layer
@@ -45,7 +46,7 @@ from arnis_korea_detailed.source_policy import write_source_policy_report
 from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
 from arnis_korea_detailed.vectorize_features import vectorize_segments
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 STATIC_TERMS_FLAG = "--accept-naver-static-raster-terms"
 FORBIDDEN_OUTPUT_MARKERS = (
     "/mnt/minecraft-data/server/world",
@@ -352,7 +353,7 @@ def cmd_repair_world_layout(args: argparse.Namespace) -> int:
         "output": str(output),
         "project_metadata_dir": str(metadata_dir),
         "copied_world_entries": sorted(copied),
-        "warning": "layout_repaired_but_writer_may_be_invalid",
+        "warning": "layout_only_repair_invalid_level_dat_or_region_files_cannot_be_fixed",
         "validation": validation,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -378,7 +379,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
         "building_mode": {
             "value": args.building_mode,
             "status": "map-readable default" if args.building_mode == "map-readable" else "advanced",
-            "note": "v0.6.0 Naver-only 기본값은 지도처럼 읽히는 낮은 footprint/outline 렌더링입니다.",
+            "note": "v0.7.0은 Minecraft load smoke 통과를 우선하며 기본 writer는 patched Arnis no-network입니다.",
         },
         "render_controls": {
             "world_scale": args.world_scale,
@@ -387,6 +388,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
             "building_height_mode": args.building_height_mode,
             "noise_filter_level": args.noise_filter_level,
             "map_readable_preset": args.map_readable_preset,
+            "writer": args.writer,
+            "minecraft_load_smoke_required": True,
         },
         "source_policy": "naver_only" if args.source in {"naver-only", "mock-naver", "naver-static"} else "legacy_or_hybrid",
     }
@@ -452,9 +455,9 @@ def cmd_generate(args: argparse.Namespace) -> int:
     synthetic_paths: dict[str, str] = {}
     if args.source in {"naver-only", "mock-naver", "naver-static"}:
         synthetic_paths = write_synthetic_layer(layout.metadata_dir, features, bbox, args.source, args.building_mode, args.road_width_multiplier)
-        terrain_source = "naver_terrain_raster_estimated" if args.terrain and args.maptype == "terrain" else "flat"
-        writer = "arnis" if args.writer == "arnis" or (args.writer == "auto" and args.building_mode == "full-experimental") else "minimal-debug"
-        if writer == "minimal-debug":
+        terrain_source = "flat"
+        writer = args.writer
+        if writer == "custom-debug":
             world_result = write_world(
                 layout.world_dir,
                 layout.metadata_dir,
@@ -467,8 +470,11 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 size=max(128, min(512, int(round(128 * args.world_scale)))),
                 quality=filter_stats,
             )
-            world_result["compatibility_warning"] = False
+            world_result["compatibility_warning"] = True
+            world_result["release_blocking_warning"] = "custom-debug writer is not the v0.7 release path"
         else:
+            if writer == "template-postprocess":
+                raise ValueError("template-postprocess writer is reserved; use arnis-no-network for v0.7")
             world_result = run_patched_arnis_renderer(
                 ROOT,
                 Path(synthetic_paths["synthetic_osm"]),
@@ -497,11 +503,29 @@ def cmd_generate(args: argparse.Namespace) -> int:
                 "world": world_result,
                 "renderer_network_disabled": True,
                 "synthetic_input_used": True,
+                "minecraft_load_smoke_required": True,
             },
         )
         world_result["source_policy_report"] = str(source_report)
         validation = validate_world_layout(layout.world_dir, layout.metadata_dir)
         world_result["validation"] = validation
+        minecraft_load_smoke: dict[str, Any] = {"executed": False, "reason": "not_requested"}
+        if args.validate_minecraft_load:
+            minecraft_load_smoke = run_minecraft_load_smoke(
+                layout.world_dir,
+                layout.metadata_dir / "logs" / "minecraft_load_smoke",
+                server_jar=args.minecraft_server_jar,
+                target_version=args.target_minecraft_version,
+                timeout_seconds=args.minecraft_load_timeout,
+            )
+            smoke_report = Path(minecraft_load_smoke["server_dir"]).parent / "minecraft_load_smoke.json"
+            if smoke_report.exists():
+                shutil.copy2(smoke_report, layout.metadata_dir / "minecraft_load_smoke.json")
+            world_result["minecraft_load_smoke"] = minecraft_load_smoke
+            if not minecraft_load_smoke.get("passed"):
+                raise ValueError("Minecraft load smoke failed; see arnis_korea_project/minecraft_load_smoke.json")
+        else:
+            world_result["minecraft_load_smoke"] = minecraft_load_smoke
         export_result = copy_playable_world_to_saves(layout.world_dir) if args.minecraft_saves_export else {"executed": False}
         world_result["minecraft_saves_export"] = export_result
     else:
@@ -522,6 +546,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
         "source_policy": {
             "source_policy": "naver_only" if args.source in {"naver-only", "mock-naver", "naver-static"} else "legacy_or_hybrid",
             "external_non_naver_sources_used": False if args.source in {"naver-only", "mock-naver", "naver-static"} else None,
+            "renderer_network_disabled": True if args.source in {"naver-only", "mock-naver", "naver-static"} else None,
+            "minecraft_load_smoke_required": True,
         },
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -553,7 +579,7 @@ def write_quality_report(path: Path, source: str, world_name: str, terrain_sourc
     path.write_text(
         "\n".join(
             [
-                "# Arnis Korea v0.6.0 Naver-only Quality Report",
+                "# Arnis Korea v0.7.0 Naver-only Quality Report",
                 "",
                 f"- writer: {writer}",
                 "- renderer_network_disabled: true",
@@ -580,6 +606,7 @@ def write_quality_report(path: Path, source: str, world_name: str, terrain_sourc
                 "",
                 "- static map labels/icons may cause noise",
                 "- exact building height unavailable",
+                "- v0.6.0 map-readable prototype worlds may fail Minecraft load compatibility; v0.7.0 requires load smoke",
             ]
         )
         + "\n",
@@ -590,6 +617,28 @@ def write_quality_report(path: Path, source: str, world_name: str, terrain_sourc
 def cmd_help(args: argparse.Namespace) -> int:
     args.parser.print_help()
     return 0
+
+
+def cmd_diagnose_world(args: argparse.Namespace) -> int:
+    world_dir = safe_output_dir(args.world_dir)
+    metadata_dir = args.project_metadata_dir or (world_dir.parent / PROJECT_DIR_NAME)
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    validation = validate_world_layout(world_dir, metadata_dir)
+    smoke: dict[str, Any] = {"executed": False, "reason": "not_requested"}
+    if args.validate_minecraft_load:
+        smoke = run_minecraft_load_smoke(
+            world_dir,
+            metadata_dir / "logs" / "minecraft_load_smoke",
+            server_jar=args.minecraft_server_jar,
+            target_version=args.target_minecraft_version,
+            timeout_seconds=args.minecraft_load_timeout,
+        )
+        smoke_report = Path(smoke["server_dir"]).parent / "minecraft_load_smoke.json"
+        if smoke_report.exists():
+            shutil.copy2(smoke_report, metadata_dir / "minecraft_load_smoke.json")
+    result = {"world_validation": validation, "minecraft_load_smoke": smoke}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if validation.get("valid") and (not args.validate_minecraft_load or smoke.get("passed")) else 2
 
 
 def add_bbox_args(parser: argparse.ArgumentParser) -> None:
@@ -667,7 +716,11 @@ def parse_args() -> argparse.Namespace:
     generate.add_argument("--clean-world-root", type=parse_optional_bool, default=True, metavar="true|false")
     generate.add_argument("--project-metadata-dir", type=Path)
     generate.add_argument("--keep-debug-in-world-root", type=parse_optional_bool, default=False, metavar="true|false")
-    generate.add_argument("--writer", choices=["auto", "arnis", "minimal-debug"], default="auto")
+    generate.add_argument("--writer", choices=["arnis-no-network", "template-postprocess", "custom-debug"], default="arnis-no-network")
+    generate.add_argument("--validate-minecraft-load", action="store_true")
+    generate.add_argument("--target-minecraft-version", default=DEFAULT_TARGET_MINECRAFT_VERSION)
+    generate.add_argument("--minecraft-load-timeout", type=int, default=180)
+    generate.add_argument("--minecraft-server-jar", type=Path)
     generate.set_defaults(func=cmd_generate)
 
     plan = sub.add_parser("plan-static", help="Plan official Naver Static Map raster requests")
@@ -722,6 +775,15 @@ def parse_args() -> argparse.Namespace:
     repair.add_argument("--project-metadata-dir", type=Path)
     repair.add_argument("--overwrite", action="store_true")
     repair.set_defaults(func=cmd_repair_world_layout)
+
+    diagnose = sub.add_parser("diagnose-world", help="Validate a world folder and optionally run Minecraft load smoke")
+    diagnose.add_argument("--world-dir", type=Path, required=True)
+    diagnose.add_argument("--project-metadata-dir", type=Path)
+    diagnose.add_argument("--validate-minecraft-load", action="store_true")
+    diagnose.add_argument("--target-minecraft-version", default=DEFAULT_TARGET_MINECRAFT_VERSION)
+    diagnose.add_argument("--minecraft-load-timeout", type=int, default=180)
+    diagnose.add_argument("--minecraft-server-jar", type=Path)
+    diagnose.set_defaults(func=cmd_diagnose_world)
 
     version = sub.add_parser("version", help="Print version")
     version.set_defaults(func=cmd_version)

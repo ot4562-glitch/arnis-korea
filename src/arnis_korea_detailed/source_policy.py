@@ -39,6 +39,8 @@ class SourcePolicy:
             "external_non_naver_sources_used": self.external_non_naver_sources_used,
             "official_naver_api_only": self.official_naver_api_only,
             "renderer_no_network": self.no_network_renderer,
+            "renderer_network_disabled": self.no_network_renderer,
+            "minecraft_load_smoke_required": True,
             **(extra or {}),
         }
 
