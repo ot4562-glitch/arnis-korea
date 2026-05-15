@@ -7,41 +7,82 @@ import json
 import os
 import sys
 import threading
+import traceback
 import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
-from tkinter import BooleanVar, Canvas, Listbox, PhotoImage, StringVar, Tk, filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
 from urllib.error import HTTPError
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-
-from arnis_korea_detailed.static_map_request_planner import split_static_map_requests  # noqa: E402
-from arnis_korea_detailed.trace_editor_core import (  # noqa: E402
-    HUFS_BBOX,
-    add_feature,
-    approve_suggested,
-    bbox_center,
-    bbox_to_text,
-    create_project,
-    empty_feature_collection,
-    export_accepted_layers,
-    export_synthetic_osm_preview,
-    extract_suggested_layers,
-    feature,
-    load_project,
-    parse_bbox_text,
-    project_paths,
-    read_json,
-    run_self_test,
-    save_project,
-    validate_project,
-    write_json,
-)
-
 APP_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "ArnisKorea"
+LOG_DIR = APP_DIR / "logs"
+LATEST_LOG = LOG_DIR / "latest.log"
+
+
+def _redact(text: str) -> str:
+    for name in ("NAVER_MAPS_CLIENT_ID", "NAVER_MAPS_CLIENT_SECRET"):
+        value = os.environ.get(name)
+        if value:
+            text = text.replace(value, "[REDACTED]")
+    return text
+
+
+def write_boot_log(message: str, exc: BaseException | None = None) -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        lines = [message]
+        if exc is not None:
+            lines.append(_redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))))
+        LATEST_LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        print(message, file=sys.stderr)
+        if exc is not None:
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+
+
+try:
+    from tkinter import BooleanVar, Canvas, Listbox, PhotoImage, StringVar, Tk, filedialog, messagebox, ttk
+    from tkinter.scrolledtext import ScrolledText
+except Exception as tkinter_exc:
+    write_boot_log("TKINTER_IMPORT_FAIL", tkinter_exc)
+    print(f"Arnis Korea tkinter import failed. See {LATEST_LOG}", file=sys.stderr)
+    raise
+
+CORE_IMPORT_ERROR: BaseException | None = None
+try:
+    from arnis_korea_detailed.static_map_request_planner import split_static_map_requests  # noqa: E402
+    from arnis_korea_detailed.trace_editor_core import (  # noqa: E402
+        HUFS_BBOX,
+        LayerEditSession,
+        add_feature,
+        approve_suggested,
+        bbox_center,
+        bbox_to_text,
+        create_project,
+        empty_feature_collection,
+        export_accepted_layers,
+        export_synthetic_osm_preview,
+        extract_suggested_layers,
+        feature,
+        iter_geometry_points,
+        lng_lat_to_pixel,
+        load_project,
+        parse_bbox_text,
+        project_paths,
+        read_json,
+        revert_accepted_to_suggested,
+        run_self_test,
+        save_project,
+        validate_project,
+        write_layer_validation_report,
+        write_json,
+    )
+except Exception as core_exc:
+    CORE_IMPORT_ERROR = core_exc
+    write_boot_log("CORE_IMPORT_FAIL", core_exc)
+
 SECRETS_PATH = APP_DIR / "secrets.json"
 STATIC_ENDPOINT = "https://maps.apigw.ntruss.com/map-static/v2/raster"
 
@@ -59,8 +100,9 @@ def safe_json(data: dict[str, object]) -> str:
 
 
 class TraceEditorApp:
-    def __init__(self, root: Tk) -> None:
+    def __init__(self, root: Tk, safe_mode: bool = False) -> None:
         self.root = root
+        self.safe_mode = safe_mode
         self.root.title("Arnis Korea - 네이버 지도 월드 생성기")
         self.root.geometry("1180x780")
         self.root.minsize(1040, 680)
@@ -79,11 +121,21 @@ class TraceEditorApp:
         self.current_layer = StringVar(value="road")
         self.feature_name = StringVar(value="")
         self.feature_memo = StringVar(value="")
-        self.canvas_points: list[tuple[float, float]] = []
+        self.edit_mode = StringVar(value="draw")
+        self.canvas_points: list[list[float]] = []
         self.background_image: PhotoImage | None = None
+        self.zoom_scale = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.pan_start: tuple[float, float] | None = None
+        self.selected_feature_index: int | None = None
+        self.selected_vertex_index: int | None = None
+        self.dragging_vertex = False
+        self.edit_session = LayerEditSession(Path(self.project_dir.get()))
 
         self._style()
-        self._load_saved_keys()
+        if not self.safe_mode:
+            self._load_saved_keys()
         self._build()
         self.refresh_project_view()
 
@@ -101,7 +153,7 @@ class TraceEditorApp:
         outer = ttk.Frame(self.root, padding=16)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text="Arnis Korea - 네이버 지도 월드 생성기", style="Title.TLabel").pack(anchor="w")
-        self.status = StringVar(value="v0.9에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.")
+        self.status = StringVar(value="v1.0에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.")
         ttk.Label(outer, textvariable=self.status).pack(anchor="w", pady=(4, 10))
 
         notebook = ttk.Notebook(outer)
@@ -137,6 +189,7 @@ class TraceEditorApp:
         ttk.Button(actions, text="새 프로젝트", style="Primary.TButton", command=self.create_project_action).pack(side="left")
         ttk.Button(actions, text="불러오기", command=self.load_project_action).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="프로젝트 폴더 열기", command=lambda: open_path(Path(self.project_dir.get()))).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="로그 보기", command=self.open_latest_log).pack(side="left", padx=(8, 0))
         self.project_text = ScrolledText(tab, height=24, font=("Consolas", 10), wrap="word")
         self.project_text.pack(fill="both", expand=True)
 
@@ -206,7 +259,7 @@ class TraceEditorApp:
 
     def _build_export_tab(self) -> None:
         tab = self.tabs["내보내기"]
-        ttk.Label(tab, text="v0.9에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.").pack(anchor="w")
+        ttk.Label(tab, text="v1.0에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.").pack(anchor="w")
         actions = ttk.Frame(tab)
         actions.pack(fill="x", pady=10)
         ttk.Button(actions, text="accepted_layers.geojson export", command=self.export_accepted).pack(side="left")
@@ -233,9 +286,10 @@ class TraceEditorApp:
             "4. 레이어 편집 탭에서 도로/건물/수역/녹지/철도/스폰포인트를 직접 그립니다.\n"
             "5. suggested 후보는 승인 버튼을 눌러야 accepted layer로 들어갑니다.\n"
             "6. 내보내기 탭에서 accepted_layers.geojson과 synthetic_osm_preview.json을 생성합니다.\n\n"
-            "공식 Static Map API와 사용자 수동 trace만 v0.9 입력으로 사용합니다. 월드 생성은 v1.1 목표입니다."
+            f"공식 Static Map API와 사용자 수동 trace만 v1.0 입력으로 사용합니다. 월드 생성은 v1.1 목표입니다.\n\n로그 파일: {LATEST_LOG}"
         )
         ttk.Label(self.tabs["도움말"], text=text, justify="left").pack(anchor="nw")
+        ttk.Button(self.tabs["도움말"], text="로그 보기", command=self.open_latest_log).pack(anchor="w", pady=(12, 0))
 
     def _load_saved_keys(self) -> None:
         if not SECRETS_PATH.exists():
@@ -279,6 +333,9 @@ class TraceEditorApp:
             messagebox.showerror("불러오기 실패", str(exc))
 
     def refresh_project_view(self) -> None:
+        if self.safe_mode:
+            self.write_project_text({"safe_mode": True, "status": "안전 모드입니다. 최근 프로젝트와 API 키를 자동으로 불러오지 않습니다.", "log": str(LATEST_LOG)})
+            return
         path = project_paths(Path(self.project_dir.get()))["project"]
         if path.exists():
             self.write_project_text(read_json(path))
@@ -288,6 +345,15 @@ class TraceEditorApp:
     def write_project_text(self, data: dict[str, object]) -> None:
         self.project_text.delete("1.0", "end")
         self.project_text.insert("end", safe_json(data))
+
+    def open_latest_log(self) -> None:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        if not LATEST_LOG.exists():
+            LATEST_LOG.write_text("아직 기록된 오류가 없습니다.\n", encoding="utf-8")
+        if sys.platform.startswith("win"):
+            os.startfile(str(LATEST_LOG))  # type: ignore[attr-defined]
+        else:
+            webbrowser.open(LATEST_LOG.as_uri())
 
     def save_keys(self) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -586,30 +652,53 @@ class TraceEditorApp:
         self.report_result.insert("end", safe_json(report))
 
 
-def self_test_gui() -> int:
-    run_self_test(ROOT / "smoke" / "gui")
+def self_test_gui(safe_mode: bool = False) -> int:
+    write_boot_log(f"GUI_SELF_TEST_START safe_mode={safe_mode}")
     root = Tk()
     root.withdraw()
-    app = TraceEditorApp(root)
-    app.project_dir.set(str(ROOT / "smoke" / "gui-project"))
-    app.create_project_action()
-    app.generate_mock_suggested()
+    TraceEditorApp(root, safe_mode=safe_mode)
     root.update_idletasks()
     root.destroy()
+    write_boot_log(f"GUI_SELF_TEST_PASS safe_mode={safe_mode}")
     print("KOREAN_GUI_SELF_TEST=PASS")
     return 0
 
 
-def main() -> int:
+def show_startup_error() -> None:
+    message = f"Arnis Korea를 시작하지 못했습니다. 자세한 내용은 {LATEST_LOG} 를 확인하세요."
+    try:
+        root = Tk()
+        root.withdraw()
+        messagebox.showerror("Arnis Korea 시작 실패", message)
+        root.destroy()
+    except Exception:
+        print(message, file=sys.stderr)
+
+
+def run_app(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test-gui", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--safe-mode", action="store_true")
+    args = parser.parse_args(argv)
+    if CORE_IMPORT_ERROR is not None:
+        raise RuntimeError("GUI core import failed") from CORE_IMPORT_ERROR
     if args.self_test_gui:
-        return self_test_gui()
+        return self_test_gui(safe_mode=args.safe_mode)
+    write_boot_log(f"GUI_BOOT_START safe_mode={args.safe_mode}")
     root = Tk()
-    TraceEditorApp(root)
+    TraceEditorApp(root, safe_mode=args.safe_mode)
+    write_boot_log(f"GUI_BOOT_OK safe_mode={args.safe_mode}")
     root.mainloop()
     return 0
+
+
+def main() -> int:
+    try:
+        return run_app()
+    except Exception as exc:
+        write_boot_log("GUI_BOOT_FAIL", exc)
+        show_startup_error()
+        return 1
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ Layer 파일은 GeoJSON FeatureCollection입니다.
 ```json
 {
   "type": "FeatureCollection",
-  "schema_version": "arnis-korea.trace-layer.v0.9",
+  "schema_version": "arnis-korea.trace-layer.v1.0",
   "features": []
 }
 ```

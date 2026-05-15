@@ -1,4 +1,4 @@
-name: Build Arnis Korea v0.9 Windows Artifact
+name: Build Arnis Korea v1.0 Windows Artifact
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - "arnis-korea-v*"
 
 env:
-  ARTIFACT_NAME: arnis-korea-0.9.0-windows_x86_64
+  ARTIFACT_NAME: arnis-korea-1.0.0-windows_x86_64
   PYTHONPATH: src
 
 permissions:
@@ -33,9 +33,12 @@ jobs:
           python -m compileall scripts src
           python -m arnis_korea_detailed.trace_editor_core self-test --output-dir smoke
           python scripts\arnis_korea_gui.py --self-test-gui
-          pyinstaller --clean --onefile --windowed --name arnis-korea --paths src scripts\arnis_korea_gui.py
+          python scripts\arnis_korea_gui.py --safe-mode --self-test-gui
+          pyinstaller --clean --onefile --windowed --name arnis-korea --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext scripts\arnis_korea_gui.py
+          pyinstaller --clean --onefile --console --name arnis-korea-debug --paths src --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.messagebox --hidden-import tkinter.filedialog --hidden-import tkinter.scrolledtext scripts\arnis_korea_gui.py
           pyinstaller --clean --onefile --name arnis-korea-cli --paths src src\arnis_korea_detailed\trace_editor_core.py
           if (-not (Test-Path dist\arnis-korea.exe)) { throw "missing GUI exe" }
+          if (-not (Test-Path dist\arnis-korea-debug.exe)) { throw "missing debug GUI exe" }
           if (-not (Test-Path dist\arnis-korea-cli.exe)) { throw "missing dev CLI exe" }
 
       - name: Trace editor QA
@@ -45,7 +48,7 @@ jobs:
           New-Item -ItemType Directory -Force smoke\qa | Out-Null
           python -m arnis_korea_detailed.trace_editor_core self-test --output-dir smoke\qa | Tee-Object -FilePath trace-editor-self-test.json
           $summary = Get-Content trace-editor-self-test.json -Raw | ConvertFrom-Json
-          foreach ($key in @("MOCK_PROJECT_CREATE","MOCK_RASTER_LOAD","SUGGESTED_LAYER_GENERATION","SUGGESTED_TO_ACCEPTED_APPROVAL","ACCEPTED_LAYERS_EXPORT","SYNTHETIC_OSM_PREVIEW_EXPORT","SOURCE_POLICY")) {
+          foreach ($key in @("MOCK_PROJECT_CREATE","MOCK_PROJECT_LOAD","MOCK_RASTER_LOAD","SUGGESTED_LAYER_GENERATION","SUGGESTED_TO_ACCEPTED_APPROVAL","LAYER_EDIT_SIMULATION","UNDO_REDO_SIMULATION","ACCEPTED_LAYER_SCHEMA","ACCEPTED_LAYERS_EXPORT","SYNTHETIC_OSM_PREVIEW_EXPORT","SYNTHETIC_OSM_PREVIEW_SCHEMA","LAYER_VALIDATION_REPORT","SOURCE_POLICY")) {
             if ($summary.$key -ne "PASS") { throw "$key failed" }
           }
           $project = $summary.project_dir
@@ -54,6 +57,7 @@ jobs:
           if (-not (Test-Path "$project\suggested_layers.geojson")) { throw "suggested layer missing" }
           if (-not (Test-Path "$project\synthetic_osm_preview.json")) { throw "synthetic preview missing" }
           if (-not (Test-Path "$project\reports\trace-editor-validation.json")) { throw "validation report missing" }
+          if (-not (Test-Path "$project\reports\layer_validation_report.json")) { throw "layer validation report missing" }
           $accepted = Get-Content "$project\accepted_layers.geojson" -Raw | ConvertFrom-Json
           if ($accepted.features.Count -lt 1) { throw "accepted layer export empty" }
           foreach ($feature in $accepted.features) {
@@ -70,6 +74,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force package\dev-tools, package\docs, package\examples | Out-Null
           Copy-Item dist\arnis-korea.exe package\arnis-korea.exe
+          Copy-Item dist\arnis-korea-debug.exe package\dev-tools\arnis-korea-debug.exe
           Copy-Item dist\arnis-korea-cli.exe package\dev-tools\arnis-korea-cli.exe
           Copy-Item README.md package\
           Copy-Item WINDOWS_QUICKSTART.md package\
@@ -81,6 +86,30 @@ jobs:
           if (Test-Path package\arnis-korea-cli.exe) { throw "CLI exe must not be artifact root" }
           Get-ChildItem package -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
           if (-not (Test-Path package\arnis-korea.exe)) { throw "GUI exe not found at artifact root" }
+
+      - name: Packaged GUI boot smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Invoke-GuiSmoke($File, $ArgsText) {
+            $log = Join-Path $env:APPDATA "ArnisKorea\logs\latest.log"
+            if (Test-Path $log) { Remove-Item $log -Force }
+            $p = Start-Process -FilePath $File -ArgumentList $ArgsText -PassThru
+            if (-not $p.WaitForExit(60000)) {
+              Stop-Process -Id $p.Id -Force
+              if (Test-Path $log) { Get-Content $log -Raw }
+              throw "$File $ArgsText timed out"
+            }
+            if ($p.ExitCode -ne 0) {
+              if (Test-Path $log) { Get-Content $log -Raw }
+              throw "$File $ArgsText failed with $($p.ExitCode)"
+            }
+            if (-not (Test-Path $log)) { throw "latest.log was not created by $File $ArgsText" }
+            Get-Content $log -Raw
+          }
+          Invoke-GuiSmoke ".\package\arnis-korea.exe" "--self-test-gui"
+          Invoke-GuiSmoke ".\package\arnis-korea.exe" "--safe-mode --self-test-gui"
+          Invoke-GuiSmoke ".\package\dev-tools\arnis-korea-debug.exe" "--self-test-gui"
 
       - name: Source and artifact policy scans
         shell: bash
@@ -117,8 +146,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: arnis-korea-0.9.0-windows_x86_64
+          name: arnis-korea-1.0.0-windows_x86_64
           path: |
-            arnis-korea-0.9.0-windows_x86_64.zip
+            arnis-korea-1.0.0-windows_x86_64.zip
             SHA256SUMS.windows
             MANIFEST.windows.txt

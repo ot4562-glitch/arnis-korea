@@ -1,14 +1,15 @@
-# Arnis Korea v0.9.0 Trace Editor MVP
+# Arnis Korea v1.0.0 Trace Editor Editing MVP
 
 Arnis Korea는 한국 지역을 Minecraft 월드로 만들기 위한 개인 개발용 Windows GUI입니다. 이 저장소의 GitHub Actions artifact는 개인 Windows PC로 옮기기 위한 산출물이며 공개 배포용 Release가 아닙니다.
 
-v0.9.0의 목표는 월드 생성 품질 개선이 아닙니다. 이번 버전은 **Naver Trace Editor + Arnis Writer** 방향의 첫 MVP이며, 사용자가 네이버 지도 배경 위에 레이어를 직접 만들고 저장/불러오기/내보내기 할 수 있게 하는 데 집중합니다.
+v1.0.0의 목표는 월드 생성 품질 개선이 아닙니다. 이번 버전은 **Naver Trace Editor + Arnis Writer** 방향에서 레이어 편집기를 실제로 쓸 수 있게 만드는 Editing MVP입니다.
 
 GUI 이름은 `Arnis Korea - 네이버 지도 월드 생성기`입니다.
 
-## v0.9에서 지원하는 것
+## v1.0에서 지원하는 것
 
 - 프로젝트 생성/저장/불러오기
+- GUI bootstrap crash log와 safe mode
 - 네이버 Static Map API 키 저장, 삭제, 연결 테스트
 - bbox 직접 입력, HUFS 샘플 bbox, 요청 계획 표시
 - Dynamic selector HTML을 bbox 선택 보조 UI로 열기
@@ -19,7 +20,7 @@ GUI 이름은 `Arnis Korea - 네이버 지도 월드 생성기`입니다.
 - `synthetic_osm_preview.json` export
 - source policy report와 trace editor validation report 생성
 
-## v0.9에서 하지 않는 것
+## v1.0에서 하지 않는 것
 
 - Minecraft 월드 생성
 - Arnis Writer 연결
@@ -31,7 +32,7 @@ GUI 이름은 `Arnis Korea - 네이버 지도 월드 생성기`입니다.
 월드 생성 연결은 v1.1 목표입니다. GUI에도 다음 문구를 명확히 표시합니다.
 
 ```text
-v0.9에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.
+v1.0에서는 레이어 편집과 내보내기까지 지원합니다. Minecraft 월드 생성은 v1.1에서 Arnis Writer와 연결됩니다.
 ```
 
 ## 프로젝트 구조
@@ -62,7 +63,7 @@ project_dir/
 Actions artifact 이름:
 
 ```text
-arnis-korea-0.9.0-windows_x86_64
+arnis-korea-1.0.0-windows_x86_64
 ```
 
 artifact root:
@@ -76,6 +77,7 @@ docs/
 examples/
 open-gui.bat
 dev-tools/arnis-korea-cli.exe
+dev-tools/arnis-korea-debug.exe
 ```
 
 root에는 `arnis-korea-cli.exe`를 노출하지 않습니다.

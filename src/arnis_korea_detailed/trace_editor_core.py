@@ -6,14 +6,15 @@ import hashlib
 import json
 import math
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
 from arnis_korea_detailed.static_map_request_planner import split_static_map_requests
 
-SCHEMA_VERSION = "arnis-korea.trace-editor.project.v0.9"
-LAYER_SCHEMA_VERSION = "arnis-korea.trace-layer.v0.9"
-VERSION = "0.9.0"
+SCHEMA_VERSION = "arnis-korea.trace-editor.project.v1.0"
+LAYER_SCHEMA_VERSION = "arnis-korea.trace-layer.v1.0"
+VERSION = "1.0.0"
 HUFS_BBOX = {"min_lat": 37.5955, "min_lng": 127.0555, "max_lat": 37.5985, "max_lng": 127.0620}
 LAYER_KINDS = {"road", "building", "water", "green", "rail", "spawn"}
 ACCEPTED_SOURCE = "user_approved"
@@ -118,10 +119,11 @@ def save_project(project_dir: Path, project: dict[str, Any]) -> None:
     write_json(project_paths(project_dir)["project"], project)
 
 
-def feature(layer: str, geometry_type: str, coordinates: Any, name: str = "", memo: str = "", source: str = ACCEPTED_SOURCE, approved: bool = True, confidence: float | None = None) -> dict[str, Any]:
+def feature(layer: str, geometry_type: str, coordinates: Any, name: str = "", memo: str = "", source: str = ACCEPTED_SOURCE, approved: bool = True, confidence: float | None = None, feature_id: str | None = None) -> dict[str, Any]:
     if layer not in LAYER_KINDS:
         raise ValueError(f"지원하지 않는 레이어입니다: {layer}")
     properties: dict[str, Any] = {
+        "id": feature_id or f"ak-{uuid.uuid4().hex[:12]}",
         "layer": layer,
         "name": name,
         "memo": memo,
@@ -135,17 +137,25 @@ def feature(layer: str, geometry_type: str, coordinates: Any, name: str = "", me
     return {"type": "Feature", "properties": properties, "geometry": {"type": geometry_type, "coordinates": coordinates}}
 
 
+def ensure_feature_ids(collection: dict[str, Any]) -> dict[str, Any]:
+    for item in collection.get("features", []):
+        props = item.setdefault("properties", {})
+        if not props.get("id"):
+            props["id"] = f"ak-{uuid.uuid4().hex[:12]}"
+    return collection
+
+
 def add_feature(project_dir: Path, target: str, item: dict[str, Any]) -> None:
     path = project_paths(project_dir)[target]
-    data = read_json(path) if path.exists() else empty_feature_collection()
+    data = ensure_feature_ids(read_json(path) if path.exists() else empty_feature_collection())
     data.setdefault("features", []).append(item)
     write_json(path, data)
 
 
 def approve_suggested(project_dir: Path, indexes: list[int] | None = None) -> int:
     paths = project_paths(project_dir)
-    suggested = read_json(paths["suggested"])
-    accepted = read_json(paths["accepted"])
+    suggested = ensure_feature_ids(read_json(paths["suggested"]))
+    accepted = ensure_feature_ids(read_json(paths["accepted"]))
     features = suggested.get("features", [])
     selected = range(len(features)) if indexes is None else indexes
     count = 0
@@ -157,23 +167,45 @@ def approve_suggested(project_dir: Path, indexes: list[int] | None = None) -> in
         item["properties"]["approved_by_user"] = True
         item["properties"]["approved_at"] = now_iso()
         item["properties"]["updated_at"] = now_iso()
+        item["properties"]["id"] = f"ak-{uuid.uuid4().hex[:12]}"
         accepted.setdefault("features", []).append(item)
         count += 1
     write_json(paths["accepted"], accepted)
     return count
 
 
+def revert_accepted_to_suggested(project_dir: Path, indexes: list[int]) -> int:
+    paths = project_paths(project_dir)
+    accepted = ensure_feature_ids(read_json(paths["accepted"]))
+    suggested = ensure_feature_ids(read_json(paths["suggested"]))
+    moved = 0
+    for index in sorted(set(indexes), reverse=True):
+        if index < 0 or index >= len(accepted.get("features", [])):
+            continue
+        item = accepted["features"].pop(index)
+        props = item.setdefault("properties", {})
+        props["source"] = "reverted_from_accepted"
+        props["approved_by_user"] = False
+        props["updated_at"] = now_iso()
+        suggested.setdefault("features", []).append(item)
+        moved += 1
+    write_json(paths["accepted"], accepted)
+    write_json(paths["suggested"], suggested)
+    export_synthetic_osm_preview(project_dir)
+    return moved
+
+
 def export_accepted_layers(project_dir: Path, destination: Path | None = None) -> Path:
     source = project_paths(project_dir)["accepted"]
     destination = destination or source
-    data = read_json(source) if source.exists() else empty_feature_collection()
+    data = ensure_feature_ids(read_json(source) if source.exists() else empty_feature_collection())
     write_json(destination, data)
     return destination
 
 
 def export_synthetic_osm_preview(project_dir: Path) -> dict[str, Any]:
     paths = project_paths(project_dir)
-    accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
+    accepted = ensure_feature_ids(read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection())
     elements = []
     for index, item in enumerate(accepted.get("features", []), start=1):
         props = item.get("properties", {})
@@ -189,7 +221,7 @@ def export_synthetic_osm_preview(project_dir: Path) -> dict[str, Any]:
                 "geometry": item.get("geometry", {}),
             }
         )
-    output = {"schema_version": "arnis-korea.synthetic-osm-preview.v0.9", "world_generation": "disabled_until_v1.1", "elements": elements}
+    output = {"schema_version": "arnis-korea.synthetic-osm-preview.v1.0", "world_generation": "disabled_until_v1.1", "elements": elements}
     write_json(paths["synthetic"], output)
     return output
 
@@ -225,6 +257,24 @@ def pixel_to_lng_lat(x: float, y: float, width: int, height: int, bbox: dict[str
     lng = bbox["min_lng"] + (x / max(1, width - 1)) * (bbox["max_lng"] - bbox["min_lng"])
     lat = bbox["max_lat"] - (y / max(1, height - 1)) * (bbox["max_lat"] - bbox["min_lat"])
     return [round(lng, 8), round(lat, 8)]
+
+
+def lng_lat_to_pixel(lng: float, lat: float, width: int, height: int, bbox: dict[str, float]) -> tuple[float, float]:
+    validate_bbox(bbox)
+    x = (lng - bbox["min_lng"]) / (bbox["max_lng"] - bbox["min_lng"]) * max(1, width - 1)
+    y = (bbox["max_lat"] - lat) / (bbox["max_lat"] - bbox["min_lat"]) * max(1, height - 1)
+    return x, y
+
+
+def coordinate_roundtrip_report(bbox: dict[str, float], width: int = 1024, height: int = 1024) -> dict[str, Any]:
+    samples = [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1), ((width - 1) / 2, (height - 1) / 2)]
+    errors = []
+    for x, y in samples:
+        lng, lat = pixel_to_lng_lat(x, y, width, height, bbox)
+        x2, y2 = lng_lat_to_pixel(lng, lat, width, height, bbox)
+        errors.append(max(abs(x - x2), abs(y - y2)))
+    max_error = max(errors) if errors else 0.0
+    return {"passed": max_error <= 0.01, "max_pixel_error": round(max_error, 6), "samples": len(samples)}
 
 
 def classify_pixel(rgb: tuple[int, int, int]) -> str | None:
@@ -276,11 +326,11 @@ def extract_suggested_layers(project_dir: Path, raster_path: Path) -> dict[str, 
 
 def source_policy_report(project_dir: Path) -> dict[str, Any]:
     paths = project_paths(project_dir)
-    accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
+    accepted = ensure_feature_ids(read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection())
     bad_accepted = [item for item in accepted.get("features", []) if item.get("properties", {}).get("approved_by_user") is not True]
     project = read_json(paths["project"]) if paths["project"].exists() else {}
     report = {
-        "schema_version": "arnis-korea.source-policy-report.v0.9",
+        "schema_version": "arnis-korea.source-policy-report.v1.0",
         "passed": len(bad_accepted) == 0,
         "external_non_naver_sources_used": False,
         "dynamic_map_usage": "bbox_selector_only",
@@ -291,6 +341,206 @@ def source_policy_report(project_dir: Path) -> dict[str, Any]:
     }
     write_json(paths["reports"] / "source-policy-report.json", report)
     return report
+
+
+def expected_geometry_type(layer: str) -> str:
+    if layer in {"road", "rail"}:
+        return "LineString"
+    if layer in {"building", "water", "green"}:
+        return "Polygon"
+    if layer == "spawn":
+        return "Point"
+    return ""
+
+
+def iter_geometry_points(geometry: dict[str, Any]) -> list[list[float]]:
+    if geometry.get("type") == "Point":
+        return [geometry.get("coordinates", [])]
+    if geometry.get("type") == "LineString":
+        return geometry.get("coordinates", [])
+    if geometry.get("type") == "Polygon":
+        return geometry.get("coordinates", [[]])[0]
+    return []
+
+
+def validate_layer_collection(collection: dict[str, Any], require_approved: bool) -> dict[str, Any]:
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    ids: set[str] = set()
+    features = collection.get("features", [])
+    if collection.get("type") != "FeatureCollection":
+        errors.append({"code": "not_feature_collection"})
+    if not isinstance(features, list):
+        errors.append({"code": "features_not_list"})
+        features = []
+    if not features:
+        warnings.append({"code": "empty_project_warning", "message": "accepted layer가 비어 있습니다."})
+    for index, item in enumerate(features):
+        props = item.get("properties", {})
+        geometry = item.get("geometry", {})
+        feature_id = props.get("id")
+        layer = props.get("layer")
+        if not feature_id:
+            errors.append({"index": index, "code": "missing_id"})
+        elif feature_id in ids:
+            errors.append({"index": index, "id": feature_id, "code": "duplicate_id"})
+        else:
+            ids.add(feature_id)
+        if layer not in LAYER_KINDS:
+            errors.append({"index": index, "code": "invalid_layer", "layer": layer})
+        expected = expected_geometry_type(layer)
+        if expected and geometry.get("type") != expected:
+            errors.append({"index": index, "code": "geometry_type_mismatch", "expected": expected, "actual": geometry.get("type")})
+        if require_approved and props.get("approved_by_user") is not True:
+            errors.append({"index": index, "code": "accepted_feature_without_user_approval"})
+        points = iter_geometry_points(geometry)
+        for point_index, point in enumerate(points):
+            if not isinstance(point, list) or len(point) != 2:
+                errors.append({"index": index, "point": point_index, "code": "invalid_coordinate"})
+        if geometry.get("type") == "LineString" and len(points) < 2:
+            errors.append({"index": index, "code": "line_requires_two_points"})
+        if geometry.get("type") == "Polygon":
+            if len(points) < 4:
+                errors.append({"index": index, "code": "polygon_requires_four_ring_points"})
+            elif points[0] != points[-1]:
+                errors.append({"index": index, "code": "polygon_not_closed"})
+    return {"passed": not errors, "errors": errors, "warnings": warnings, "feature_count": len(features), "duplicate_id_check": "PASS" if not any(e.get("code") == "duplicate_id" for e in errors) else "FAIL"}
+
+
+def write_layer_validation_report(project_dir: Path) -> dict[str, Any]:
+    paths = project_paths(project_dir)
+    accepted = ensure_feature_ids(read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection())
+    suggested = ensure_feature_ids(read_json(paths["suggested"]) if paths["suggested"].exists() else empty_feature_collection())
+    project = read_json(paths["project"]) if paths["project"].exists() else {}
+    report = {
+        "schema_version": "arnis-korea.layer-validation-report.v1.0",
+        "accepted": validate_layer_collection(accepted, require_approved=True),
+        "suggested": validate_layer_collection(suggested, require_approved=False),
+        "coordinate_roundtrip": coordinate_roundtrip_report(project.get("bbox", HUFS_BBOX)),
+    }
+    report["passed"] = report["accepted"]["passed"] and report["coordinate_roundtrip"]["passed"]
+    write_json(paths["reports"] / "layer_validation_report.json", report)
+    return report
+
+
+class LayerEditSession:
+    def __init__(self, project_dir: Path) -> None:
+        self.project_dir = project_dir
+        self.undo_stack: list[dict[str, Any]] = []
+        self.redo_stack: list[dict[str, Any]] = []
+
+    def _path(self) -> Path:
+        return project_paths(self.project_dir)["accepted"]
+
+    def read(self) -> dict[str, Any]:
+        return ensure_feature_ids(read_json(self._path()) if self._path().exists() else empty_feature_collection())
+
+    def write(self, data: dict[str, Any]) -> None:
+        write_json(self._path(), ensure_feature_ids(data))
+        export_synthetic_osm_preview(self.project_dir)
+
+    def snapshot(self) -> None:
+        self.undo_stack.append(json.loads(json.dumps(self.read())))
+        self.redo_stack.clear()
+
+    def undo(self) -> bool:
+        if not self.undo_stack:
+            return False
+        current = self.read()
+        previous = self.undo_stack.pop()
+        self.redo_stack.append(current)
+        self.write(previous)
+        return True
+
+    def redo(self) -> bool:
+        if not self.redo_stack:
+            return False
+        current = self.read()
+        next_state = self.redo_stack.pop()
+        self.undo_stack.append(current)
+        self.write(next_state)
+        return True
+
+    def add(self, item: dict[str, Any]) -> None:
+        self.snapshot()
+        data = self.read()
+        data.setdefault("features", []).append(item)
+        self.write(data)
+
+    def delete_feature(self, index: int) -> bool:
+        data = self.read()
+        if index < 0 or index >= len(data.get("features", [])):
+            return False
+        self.snapshot()
+        del data["features"][index]
+        self.write(data)
+        return True
+
+    def update_properties(self, index: int, layer: str | None = None, name: str | None = None, memo: str | None = None) -> bool:
+        data = self.read()
+        if index < 0 or index >= len(data.get("features", [])):
+            return False
+        self.snapshot()
+        props = data["features"][index].setdefault("properties", {})
+        if layer:
+            props["layer"] = layer
+        if name is not None:
+            props["name"] = name
+        if memo is not None:
+            props["memo"] = memo
+        props["updated_at"] = now_iso()
+        self.write(data)
+        return True
+
+    def move_vertex(self, feature_index: int, vertex_index: int, coord: list[float]) -> bool:
+        data = self.read()
+        if feature_index < 0 or feature_index >= len(data.get("features", [])):
+            return False
+        geometry = data["features"][feature_index].get("geometry", {})
+        self.snapshot()
+        if geometry.get("type") == "Point":
+            geometry["coordinates"] = coord
+        elif geometry.get("type") == "LineString" and 0 <= vertex_index < len(geometry.get("coordinates", [])):
+            geometry["coordinates"][vertex_index] = coord
+        elif geometry.get("type") == "Polygon":
+            ring = geometry.get("coordinates", [[]])[0]
+            if 0 <= vertex_index < len(ring):
+                ring[vertex_index] = coord
+                if vertex_index == 0:
+                    ring[-1] = coord
+                elif vertex_index == len(ring) - 1:
+                    ring[0] = coord
+            else:
+                return False
+        else:
+            return False
+        data["features"][feature_index].setdefault("properties", {})["updated_at"] = now_iso()
+        self.write(data)
+        return True
+
+    def delete_vertex(self, feature_index: int, vertex_index: int) -> bool:
+        data = self.read()
+        if feature_index < 0 or feature_index >= len(data.get("features", [])):
+            return False
+        geometry = data["features"][feature_index].get("geometry", {})
+        self.snapshot()
+        if geometry.get("type") == "LineString":
+            coords = geometry.get("coordinates", [])
+            if len(coords) <= 2 or vertex_index < 0 or vertex_index >= len(coords):
+                return False
+            del coords[vertex_index]
+        elif geometry.get("type") == "Polygon":
+            ring = geometry.get("coordinates", [[]])[0]
+            editable_len = max(0, len(ring) - 1)
+            if editable_len <= 3 or vertex_index < 0 or vertex_index >= editable_len:
+                return False
+            del ring[vertex_index]
+            ring[-1] = ring[0]
+        else:
+            return False
+        data["features"][feature_index].setdefault("properties", {})["updated_at"] = now_iso()
+        self.write(data)
+        return True
 
 
 def validate_project(project_dir: Path) -> dict[str, Any]:
@@ -307,8 +557,15 @@ def validate_project(project_dir: Path) -> dict[str, Any]:
     raster_files = project.get("raster_files", [])
     checks["raster_exists_if_downloaded"] = all((project_dir / item).exists() for item in raster_files)
     try:
-        accepted = read_json(paths["accepted"])
+        accepted = ensure_feature_ids(read_json(paths["accepted"]))
+        layer_report = write_layer_validation_report(project_dir)
         checks["accepted_layers_geojson_valid"] = accepted.get("type") == "FeatureCollection" and isinstance(accepted.get("features"), list)
+        checks["accepted_layer_schema_valid"] = layer_report["accepted"]["passed"]
+        checks["geometry_closed_polygon_valid"] = not any(error.get("code") == "polygon_not_closed" for error in layer_report["accepted"]["errors"])
+        checks["road_rail_line_valid"] = not any(error.get("code") == "line_requires_two_points" for error in layer_report["accepted"]["errors"])
+        checks["duplicate_id_check"] = layer_report["accepted"]["duplicate_id_check"] == "PASS"
+        checks["empty_project_warning"] = "present" if layer_report["accepted"]["warnings"] else "none"
+        checks["coordinate_roundtrip_valid"] = layer_report["coordinate_roundtrip"]["passed"]
         checks["no_accepted_features_without_user_approval"] = all(item.get("properties", {}).get("approved_by_user") is True for item in accepted.get("features", []))
     except Exception:
         checks["accepted_layers_geojson_valid"] = False
@@ -318,9 +575,9 @@ def validate_project(project_dir: Path) -> dict[str, Any]:
     checks["no_secrets_in_project_dir"] = not any(path.name.lower() == "secrets.json" or path.suffix.lower() in {".key", ".secret", ".env"} for path in project_dir.rglob("*") if path.is_file())
     checks["no_generated_world"] = not any(path.name in {"level.dat", "session.lock"} or path.suffix == ".mca" for path in project_dir.rglob("*") if path.is_file())
     passed = all(value is True for value in checks.values() if isinstance(value, bool))
-    report = {"schema_version": "arnis-korea.trace-editor-validation.v0.9", "passed": passed, "checks": checks}
+    report = {"schema_version": "arnis-korea.trace-editor-validation.v1.0", "passed": passed, "checks": checks}
     write_json(paths["reports"] / "trace-editor-validation.json", report)
-    manifest = {"schema_version": "arnis-korea.project-manifest.v0.9", "project": project, "files": sorted(str(path.relative_to(project_dir)) for path in project_dir.rglob("*") if path.is_file())}
+    manifest = {"schema_version": "arnis-korea.project-manifest.v1.0", "project": project, "files": sorted(str(path.relative_to(project_dir)) for path in project_dir.rglob("*") if path.is_file())}
     write_json(paths["reports"] / "project-manifest.json", manifest)
     return report
 
@@ -352,17 +609,50 @@ def run_self_test(base_dir: Path) -> dict[str, Any]:
     approved = approve_suggested(project_dir, [0])
     if approved != 1:
         raise RuntimeError("suggested -> accepted 승인 실패")
+    session = LayerEditSession(project_dir)
+    road = feature("road", "LineString", [[127.056, 37.598], [127.057, 37.5975], [127.058, 37.597]], name="편집 도로")
+    rail = feature("rail", "LineString", [[127.059, 37.598], [127.061, 37.597]], name="편집 철도")
+    building = feature("building", "Polygon", [[[127.056, 37.5968], [127.0565, 37.5968], [127.0565, 37.5964], [127.056, 37.5964], [127.056, 37.5968]]], name="편집 건물")
+    water = feature("water", "Polygon", [[[127.057, 37.596], [127.0574, 37.596], [127.0574, 37.5957], [127.057, 37.5957], [127.057, 37.596]]], name="편집 수역")
+    green = feature("green", "Polygon", [[[127.058, 37.596], [127.0584, 37.596], [127.0584, 37.5957], [127.058, 37.5957], [127.058, 37.596]]], name="편집 녹지")
+    spawn = feature("spawn", "Point", [127.05875, 37.597], name="스폰")
+    for item in [road, rail, building, water, green, spawn]:
+        session.add(item)
+    before_edit_count = len(session.read()["features"])
+    if before_edit_count < 7:
+        raise RuntimeError("layer edit simulation feature 생성 실패")
+    if not session.move_vertex(1, 0, [127.0562, 37.5979]):
+        raise RuntimeError("점 이동 실패")
+    if not session.delete_vertex(1, 1):
+        raise RuntimeError("점 삭제 실패")
+    if not session.update_properties(2, layer="rail", name="class 변경 철도", memo="v1.0 편집 테스트"):
+        raise RuntimeError("feature class 변경 실패")
+    if not session.undo() or not session.redo():
+        raise RuntimeError("undo/redo simulation 실패")
+    if revert_accepted_to_suggested(project_dir, [0]) != 1:
+        raise RuntimeError("accepted -> suggested 되돌리기 실패")
     export_accepted_layers(project_dir)
     export_synthetic_osm_preview(project_dir)
+    layer_validation = write_layer_validation_report(project_dir)
+    if not layer_validation["passed"]:
+        raise RuntimeError("layer validation 실패")
     validation = validate_project(project_dir)
     summary = {
         "GUI_SELF_TEST_INPUTS": "PASS",
         "MOCK_PROJECT_CREATE": "PASS",
+        "MOCK_PROJECT_LOAD": "PASS" if load_project(project_dir).get("project_name") else "FAIL",
         "MOCK_RASTER_LOAD": "PASS",
         "SUGGESTED_LAYER_GENERATION": "PASS",
         "SUGGESTED_TO_ACCEPTED_APPROVAL": "PASS",
+        "ACCEPTED_TO_SUGGESTED_REVERT": "PASS",
+        "LAYER_EDIT_SIMULATION": "PASS",
+        "UNDO_REDO_SIMULATION": "PASS",
+        "COORDINATE_ROUNDTRIP": "PASS" if coordinate_roundtrip_report(HUFS_BBOX)["passed"] else "FAIL",
+        "ACCEPTED_LAYER_SCHEMA": "PASS" if layer_validation["accepted"]["passed"] else "FAIL",
         "ACCEPTED_LAYERS_EXPORT": "PASS",
         "SYNTHETIC_OSM_PREVIEW_EXPORT": "PASS",
+        "SYNTHETIC_OSM_PREVIEW_SCHEMA": "PASS" if read_json(project_paths(project_dir)["synthetic"]).get("schema_version") == "arnis-korea.synthetic-osm-preview.v1.0" else "FAIL",
+        "LAYER_VALIDATION_REPORT": "PASS",
         "SOURCE_POLICY": "PASS" if validation["checks"]["source_policy_pass"] else "FAIL",
         "project_dir": str(project_dir),
         "suggested_features": len(suggested["features"]),
