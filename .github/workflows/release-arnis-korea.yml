@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -92,7 +92,12 @@ jobs:
           python -m arnis_korea_detailed.trace_worldgen self-test --output-dir smoke\worldgen --root . --renderer --load-smoke | Tee-Object -FilePath worldgen-self-test.json
           $summary = Get-Content worldgen-self-test.json -Raw | ConvertFrom-Json
           foreach ($key in @("SYNTHETIC_OSM_EXPORT","SYNTHETIC_OSM_SCHEMA","SOURCE_POLICY_V11","ARNIS_NO_NETWORK_WORLDGEN","CLEAN_WORLD_LAYOUT","PAPER_26_1_2_LOAD_SMOKE")) {
-            if ($summary.$key -ne "PASS") { throw "$key failed" }
+            if ($summary.$key -ne "PASS") {
+              $project = $summary.project_dir
+              if ($project -and (Test-Path "$project\reports\minecraft-load-smoke.json")) { Get-Content "$project\reports\minecraft-load-smoke.json" -Raw }
+              if ($project -and (Test-Path "$project\reports\minecraft-load-smoke.log")) { Get-Content "$project\reports\minecraft-load-smoke.log" -Tail 160 }
+              throw "$key failed"
+            }
           }
           $project = $summary.project_dir
           if (-not (Test-Path "$project\synthetic_osm.json")) { throw "synthetic_osm.json missing" }
