@@ -386,7 +386,7 @@ def scan_artifact(path: Path) -> dict[str, Any]:
             hits.append(str(rel))
         if item.suffix.lower() not in {".exe", ".dll", ".png", ".jpg", ".jpeg", ".ppm", ".zip"}:
             text = item.read_text(encoding="utf-8", errors="ignore")
-            secret_markers = ["ghp_", "github_pat_", "naver_maps_api_key"]
+            secret_markers = ["g" + "hp_", "github" + "_pat_", "naver_maps_api" + "_key"]
             if any(marker in text for marker in secret_markers):
                 hits.append(str(rel))
     return {"passed": not hits, "hits": hits}
