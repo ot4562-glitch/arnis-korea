@@ -166,6 +166,7 @@ class TraceEditorApp:
         self.advanced_window = None
         self.api_settings_window = None
         self.troubleshooting_window = None
+        self.beginner_layer_window = None
 
         self._style()
         if not self.safe_mode:
@@ -647,8 +648,81 @@ class TraceEditorApp:
         ttk.Button(actions, text="닫기", command=window.destroy).pack(side="left", padx=(8, 0))
 
     def open_layer_editor(self) -> None:
-        self.open_advanced_settings()
-        self.advanced_notebook.select(self.tabs["레이어 편집"])
+        if self.beginner_layer_window is not None and self.beginner_layer_window.winfo_exists():
+            self.beginner_layer_window.lift()
+            self.refresh_beginner_layer_window()
+            return
+        window = Toplevel(self.root)
+        self.beginner_layer_window = window
+        window.title("레이어 확인/수정")
+        window.geometry("720x460")
+        body = ttk.Frame(window, padding=14)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="AI 후보를 확인하고 필요한 항목만 승인된 레이어로 옮깁니다. 월드 생성은 승인된 레이어만 사용합니다.").pack(anchor="w")
+        summary = ttk.Frame(body)
+        summary.pack(fill="x", pady=(10, 8))
+        ttk.Label(summary, text="승인된 레이어 수").pack(side="left")
+        ttk.Label(summary, textvariable=self.layer_counts).pack(side="left", padx=(10, 0))
+
+        lists = ttk.Frame(body)
+        lists.pack(fill="both", expand=True)
+        left = ttk.Frame(lists)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        right = ttk.Frame(lists)
+        right.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        ttk.Label(left, text="AI 후보").pack(anchor="w")
+        self.beginner_suggested_list = Listbox(left, height=12)
+        self.beginner_suggested_list.pack(fill="both", expand=True, pady=(4, 0))
+        ttk.Label(right, text="승인된 레이어").pack(anchor="w")
+        self.beginner_accepted_list = Listbox(right, height=12)
+        self.beginner_accepted_list.pack(fill="both", expand=True, pady=(4, 0))
+
+        actions = ttk.Frame(body)
+        actions.pack(fill="x", pady=(12, 0))
+        ttk.Button(actions, text="AI 후보 생성", command=self.generate_mock_suggested).pack(side="left")
+        ttk.Button(actions, text="선택한 AI 후보 승인", command=self.approve_beginner_suggested).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="선택한 승인된 레이어 삭제", command=self.delete_beginner_accepted).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="닫기", command=window.destroy).pack(side="left", padx=(8, 0))
+        self.refresh_beginner_layer_window()
+
+    def refresh_beginner_layer_window(self) -> None:
+        if not hasattr(self, "beginner_suggested_list") or not hasattr(self, "beginner_accepted_list"):
+            return
+        paths = project_paths(Path(self.project_dir.get()))
+        accepted = read_json(paths["accepted"]) if paths["accepted"].exists() else empty_feature_collection()
+        suggested = read_json(paths["suggested"]) if paths["suggested"].exists() else empty_feature_collection()
+        self.beginner_suggested_list.delete(0, "end")
+        for idx, item in enumerate(suggested.get("features", [])):
+            props = item.get("properties", {})
+            self.beginner_suggested_list.insert("end", f"{idx}: {props.get('layer')} 신뢰도={props.get('confidence', '')}")
+        self.beginner_accepted_list.delete(0, "end")
+        for idx, item in enumerate(accepted.get("features", [])):
+            props = item.get("properties", {})
+            self.beginner_accepted_list.insert("end", f"{idx}: {props.get('layer')} {props.get('name', '')}")
+        self.refresh_layer_summary()
+        self.update_final_wizard_statuses()
+
+    def approve_beginner_suggested(self) -> None:
+        selection = list(self.beginner_suggested_list.curselection())
+        if not selection:
+            messagebox.showwarning("선택 필요", "승인할 AI 후보를 선택하세요.")
+            return
+        count = approve_suggested(Path(self.project_dir.get()), selection)
+        export_synthetic_osm_preview(Path(self.project_dir.get()))
+        self.refresh_layer_lists()
+        self.refresh_beginner_layer_window()
+        self.draw_canvas()
+        self.status.set(f"{count}개 AI 후보를 승인된 레이어로 승인했습니다.")
+
+    def delete_beginner_accepted(self) -> None:
+        selection = self.beginner_accepted_list.curselection()
+        if not selection:
+            messagebox.showwarning("선택 필요", "삭제할 승인된 레이어를 선택하세요.")
+            return
+        self.edit_session.delete_feature(selection[0])
+        self.refresh_layer_lists()
+        self.refresh_beginner_layer_window()
+        self.draw_canvas()
 
     def open_help(self) -> None:
         self.open_advanced_settings()
@@ -1566,6 +1640,15 @@ def self_test_simple_wizard() -> int:
         root.destroy()
         raise RuntimeError("troubleshooting dialog did not open")
     app.troubleshooting_window.destroy()
+    app.open_layer_editor()
+    root.update()
+    if app.advanced_host.winfo_ismapped():
+        root.destroy()
+        raise RuntimeError("beginner layer editor opened advanced settings")
+    if app.beginner_layer_window is None or not app.beginner_layer_window.winfo_exists():
+        root.destroy()
+        raise RuntimeError("beginner layer editor dialog did not open")
+    app.beginner_layer_window.destroy()
     root.destroy()
     if leaked:
         raise RuntimeError(f"advanced terms visible in default UI: {leaked}")

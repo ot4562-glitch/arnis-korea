@@ -36,6 +36,7 @@ The beginner UI shows only:
 - bottom `로그` and `문제 해결`
 
 `API 키 설정`, `도움말`, and `문제 해결` open small beginner dialogs. The full advanced notebook opens only through `고급 설정 열기`.
+`레이어 확인/수정` opens a small beginner layer dialog for AI candidate approval and approved-layer cleanup without exposing the full advanced notebook.
 
 ## Hidden from default UI
 

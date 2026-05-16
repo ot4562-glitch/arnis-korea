@@ -14,6 +14,7 @@ Convert Arnis Korea from a visible developer tab collection into a Korean 3-step
 | API key setup available from beginner mode without opening advanced mode | `open_api_settings()` opens a small `Toplevel`; self-test checks advanced host remains hidden | Local PASS |
 | Help available from beginner mode without opening advanced mode | `show_beginner_help()` popup; self-test checks advanced host remains hidden | Local PASS |
 | Troubleshooting available without opening full advanced mode | `open_troubleshooting()` opens a small `Toplevel`; self-test checks advanced host remains hidden | Local PASS |
+| Layer review/edit from beginner mode does not open full advanced mode | `open_layer_editor()` opens a small beginner `Toplevel`; self-test checks advanced host remains hidden | Local PASS |
 | Advanced mode opens through one explicit button | `고급 설정 열기`; `--self-test-advanced-mode` | Local PASS |
 | Layer terminology Koreanized for user UI | GUI labels use 승인된 레이어, AI 후보, 월드 생성용 변환 데이터, 데이터 사용 안전 검사, 월드 생성 엔진, 지도 범위 | Local PASS |
 | Final generation wizard shows five ordered checks and status values | `wizard_status_vars` with `완료`, `필요함`, `오류` | Local PASS |
