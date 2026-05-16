@@ -29,8 +29,8 @@ Convert Arnis Korea from a visible developer tab collection into a Korean 3-step
 | Root exposes only `arnis-korea.exe` | workflow checks root `.exe` list equals only `arnis-korea.exe` | Windows pending |
 | Version and artifact metadata | `__version__`, `trace_editor_core VERSION`, workflow artifact name, docs | Local PASS |
 | Korean UX docs updated | `README.md`, `WINDOWS_QUICKSTART.md`, `docs/TRACE_EDITOR_USER_GUIDE.md`, `docs/RELEASE_V2_0_1_SIMPLE_UX.md` | Local PASS |
-| Commit/tag report | local commit and tag exist | Local PASS |
-| Actions run URL, artifact id/name/SHA256 | requires authenticated push and successful Actions run | Blocked |
+| Commit/tag report | local commit `527b19d2401d249b42475d6e1acfa983a0b4f2e3` and tag `arnis-korea-v2.0.1-simple-ux` exist | Local PASS |
+| Actions run URL, artifact id/name/SHA256 | requires authenticated push and successful Actions run; public GitHub API currently shows no `arnis-korea-v2.0.1-simple-ux` tag/run/artifact | Blocked |
 
 ## Current blocker
 
@@ -41,3 +41,10 @@ fatal: could not read Username for 'https://github.com': No such device or addre
 ```
 
 Until the tag is pushed and the Windows workflow succeeds, the objective is not fully complete.
+
+Public remote evidence as of the latest audit:
+
+- remote `main`: `a80b05200b4587ec13454c26faece530e8f038c9`
+- latest workflow run: `25917916181`, `arnis-korea-v2.0.0-private-final`, success
+- latest artifact: `7017231404`, `arnis-korea-2.0.0-private-final-windows_x86_64`
+- missing remote tag/artifact: `arnis-korea-v2.0.1-simple-ux`, `arnis-korea-2.0.1-simple-ux-windows_x86_64`
